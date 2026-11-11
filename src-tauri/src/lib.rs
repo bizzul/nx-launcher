@@ -6,6 +6,7 @@ mod library;
 mod prefs;
 mod runner;
 mod settings;
+mod updater;
 
 use config::ConfigStore;
 use library::{Game, Library};
@@ -248,6 +249,64 @@ fn config_set_italian_prompts(state: State<AppState>, on: bool) -> Result<config
     Ok(store.config.clone())
 }
 
+// ── The engine's version (docs/frontends.md, "Following main") ──────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineState {
+    #[serde(flatten)]
+    info: updater::EngineInfo,
+    /// The commit before the last update, for a rollback.
+    previous: Option<String>,
+}
+
+#[tauri::command]
+async fn engine_info(state: State<'_, AppState>) -> Result<EngineState, String> {
+    let info = updater::info(&engine::Engine::dev_default()).await?;
+    let previous = state.config.lock().unwrap().config.previous_engine.clone();
+    Ok(EngineState { info, previous })
+}
+
+/// Fetches main and says what moving to it would change for the launcher.
+#[tauri::command]
+async fn engine_check() -> Result<updater::UpdateInfo, String> {
+    updater::check(&engine::Engine::dev_default()).await
+}
+
+/// Moves the engine to main's commit as last fetched (`latest`), or back to
+/// the commit before the last update. The commit never comes from the web
+/// view: only these two are reachable.
+#[tauri::command]
+async fn engine_apply(app: AppHandle, state: State<'_, AppState>, rollback: bool) -> Result<updater::Applied, String> {
+    if state.building() {
+        return Err("Aspetta la fine della build prima di cambiare versione del motore".into());
+    }
+    if !state.running.lock().unwrap().is_empty() {
+        return Err("Chiudi i giochi aperti prima di cambiare versione del motore".into());
+    }
+    let target = if rollback {
+        state.config.lock().unwrap().config.previous_engine.clone().ok_or("Nessuna versione precedente")?
+    } else {
+        "origin/main".to_string()
+    };
+    let applied = updater::apply(&engine::Engine::dev_default(), &target).await?;
+    {
+        let mut store = state.config.lock().unwrap();
+        store.config.previous_engine = Some(applied.previous.clone());
+        store.save().map_err(|e| e.to_string())?;
+    }
+    let _ = tauri::Emitter::emit(&app, "library-changed", ()); // the rebuild hints change
+    Ok(applied)
+}
+
+/// For each game this launcher built: why rebuilding with the current
+/// engine is worth it (none when nothing that reaches the app changed).
+#[tauri::command]
+async fn engine_rebuild_hints(state: State<'_, AppState>) -> Result<HashMap<String, Vec<String>>, String> {
+    let games = state.library.lock().unwrap().games().to_vec();
+    Ok(updater::rebuild_hints(&engine::Engine::dev_default(), &games).await)
+}
+
 // ── Cheats ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -432,6 +491,10 @@ pub fn run() {
             config_set_keys,
             config_set_cloud_folder,
             config_set_italian_prompts,
+            engine_info,
+            engine_check,
+            engine_apply,
+            engine_rebuild_hints,
             cheats_get,
             cheats_set,
             cheats_master,

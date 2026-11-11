@@ -5,6 +5,8 @@ import type { Game } from "../lib/ipc";
 
 type Props = {
   games: Game[];
+  /** Why a game is worth rebuilding with the current engine, by title ID. */
+  hints: Record<string, string[]>;
   selectedId: string | null;
   onSelect: (titleId: string) => void;
   onAdd: () => void;
@@ -29,7 +31,7 @@ function storedSort(): Sort {
   }
 }
 
-export default function Library({ games, selectedId, onSelect, onAdd }: Props) {
+export default function Library({ games, hints, selectedId, onSelect, onAdd }: Props) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<Sort>(storedSort);
 
@@ -119,6 +121,8 @@ export default function Library({ games, selectedId, onSelect, onAdd }: Props) {
                   <p className="truncate text-xs text-neutral-500">
                     {g.runningSince ? (
                       <span className="font-medium text-emerald-600 dark:text-emerald-400">● In gioco</span>
+                    ) : hints[g.titleId] ? (
+                      <span className="font-medium text-amber-600 dark:text-amber-400">↻ Da ricompilare</span>
                     ) : sort === "time" && g.playSeconds ? (
                       formatDuration(g.playSeconds)
                     ) : g.lastPlayed ? (

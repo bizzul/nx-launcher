@@ -184,7 +184,8 @@ Tab **Impostazioni** (cloud save, messaggi in italiano, prod.keys), pagina **Che
 - Export IPA (con `--romfs separate` per i giochi grandi).
 - Statistiche di gioco, ultimo giocato, ordinamento e filtri.
 
-### Fase 5: aggiornamento del motore
+### Fase 5: aggiornamento del motore ✅
+Nella scheda **Ambiente**: «Cerca aggiornamenti», le note `Front-ends:`, cosa cambia per il launcher, «Aggiorna» e «Torna alla versione precedente». Il controllo del compilatore Metal legge il requisito da `dm/gfx/tools/dmsh_chain.lock` del motore. Dopo un aggiornamento, `git add engine && git commit` fissa la nuova versione in questo repo.
 - Pulsante "Aggiorna nxnative": fetch → mostra le righe `Front-ends:` e il diff di `docs/launcher.schema.json` → conferma → checkout.
 - I giochi la cui ultima build usava un commit diverso ricevono il badge "Ricompila consigliato".
 

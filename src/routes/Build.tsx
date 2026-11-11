@@ -73,12 +73,17 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
     if (pre) check(pre.source.path, next); // an IPA has its own requirements
   };
 
+  // A source handed over (dropped, or "Ricompila" from the library): a
+  // finished build's report makes way for it; a running build keeps the page.
   useEffect(() => {
-    if (pendingSource && loaded && !snap) {
-      check(pendingSource);
-      onSourceTaken();
+    if (!pendingSource || !loaded) return;
+    onSourceTaken();
+    if (snap?.status === "running") {
+      onError("Una build è già in corso: aspetta che finisca");
+      return;
     }
-  }, [pendingSource, loaded, snap, check, onSourceTaken]);
+    (snap ? buildDismiss().then(() => setSnap(null)) : Promise.resolve()).then(() => check(pendingSource));
+  }, [pendingSource, loaded, snap, check, onSourceTaken, onError]);
 
   const pick = async (directory: boolean) => {
     const path = await open(

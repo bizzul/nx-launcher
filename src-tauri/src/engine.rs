@@ -6,10 +6,6 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-/// The Xcode whose Metal compiler nxnative's shader chain is locked to
-/// (`dmsh_chain.lock`). Another version stops an NVN game's build.
-const REQUIRED_XCODE: &str = "Xcode 27.2";
-
 /// Homebrew tools the build script calls.
 const BREW_TOOLS: [&str; 3] = ["xcodegen", "glslang", "zstd"];
 
@@ -21,7 +17,8 @@ pub struct Engine {
 
 impl Engine {
     /// Development layout: `engine/` (git submodule) and `engine-venv/`
-    /// beside `src-tauri/`. Phase 5 makes this a user setting.
+    /// beside `src-tauri/`. A packaged launcher would keep them in its data
+    /// folder instead; every caller goes through here.
     pub fn dev_default() -> Self {
         let project = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -31,6 +28,11 @@ impl Engine {
             root: project.join("engine"),
             python: project.join("engine-venv/bin/python"),
         }
+    }
+
+    /// The venv's pip, for the engine's Python requirements.
+    pub fn pip(&self) -> PathBuf {
+        self.python.with_file_name("pip")
     }
 
     /// The packing script. `NXL_BUILD_SCRIPT` replaces it, for development:
@@ -142,25 +144,37 @@ pub async fn doctor(engine: &Engine) -> DoctorReport {
         }),
     });
 
-    // 3. Xcode, the exact version the shader chain is locked to.
-    let (_, xcode) = run("xcodebuild", &["-version"], &path).await;
-    let xcode_ok = xcode == REQUIRED_XCODE;
+    // 3. The selected Xcode (its Metal compiler is what the next check holds to the lock).
+    let (xcode_ok, xcode) = run("xcodebuild", &["-version"], &path).await;
     checks.push(Check {
         id: "xcode",
-        label: "Xcode 27.2",
+        label: "Xcode",
         ok: xcode_ok,
         detail: xcode,
-        fix: (!xcode_ok).then(|| "sudo xcode-select -s /Applications/Xcode-27.2.app".into()),
+        fix: (!xcode_ok).then(|| "sudo xcode-select -s /Applications/Xcode.app".into()),
     });
 
-    // 4. The Metal Toolchain, a separate download since Xcode 26.
+    // 4. The Metal compiler: present (the Metal Toolchain is a separate
+    //    download) and the version the engine's shader chain is locked to.
+    //    The requirement is read from the engine, so it follows its updates.
     let (metal_ok, metal) = run("xcrun", &["metal", "--version"], &path).await;
+    let required = required_metal(&engine.root);
+    let matches = required.as_ref().is_none_or(|r| *r == metal);
     checks.push(Check {
         id: "metal",
-        label: "Metal Toolchain",
-        ok: metal_ok,
-        detail: metal,
-        fix: (!metal_ok).then(|| "xcodebuild -downloadComponent MetalToolchain".into()),
+        label: "Compilatore Metal",
+        ok: metal_ok && matches,
+        detail: match (&required, matches) {
+            (Some(r), false) => format!("{metal} · il motore richiede: {r}"),
+            _ => metal,
+        },
+        fix: if !metal_ok {
+            Some("xcodebuild -downloadComponent MetalToolchain".into())
+        } else if !matches {
+            Some("Installa l'Xcode con quel compilatore e selezionalo: sudo xcode-select -s /Applications/Xcode-<versione>.app".into())
+        } else {
+            None
+        },
     });
 
     // 5. Homebrew tools, looked up in the PATH children will get.
@@ -176,6 +190,23 @@ pub async fn doctor(engine: &Engine) -> DoctorReport {
     }
 
     DoctorReport { checks, child_path: path }
+}
+
+/// The Metal compiler the shader chain is locked to: `metal_macosx` in
+/// `dm/gfx/tools/dmsh_chain.lock`. Another one stops an NVN game's build.
+pub fn required_metal(root: &Path) -> Option<String> {
+    metal_in_lock(&std::fs::read_to_string(root.join("dm/gfx/tools/dmsh_chain.lock")).ok()?)
+}
+
+pub fn metal_in_lock(lock: &str) -> Option<String> {
+    lock.lines().find_map(|l| l.strip_prefix("metal_macosx\t")).map(|v| v.trim().to_string())
+}
+
+/// The Metal compiler this Mac would use now (the selected Xcode's).
+pub async fn installed_metal() -> Option<String> {
+    let path = child_path(std::env::var("PATH").ok().as_deref());
+    let (ok, v) = run("xcrun", &["metal", "--version"], &path).await;
+    ok.then_some(v)
 }
 
 /// Whether Xcode's iOS platform is installed (a separate download in

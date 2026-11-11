@@ -51,6 +51,10 @@ export type Game = {
   lastExit: ExitInfo | null;
   /** Set while the game runs (Unix seconds). */
   runningSince: number | null;
+  /** The engine commit this launcher built it with (null: built elsewhere). */
+  builtWith: string | null;
+  /** The game files it was built from, for "Ricompila". */
+  sourcePath: string | null;
 };
 
 export type ImportReport = { added: Game[]; errors: string[] };
@@ -131,6 +135,55 @@ export const configSetCloudFolder = (path: string | null) =>
   invoke<Config>("config_set_cloud_folder", { path });
 export const configSetItalianPrompts = (on: boolean) =>
   invoke<Config>("config_set_italian_prompts", { on });
+
+// ── The engine's version (docs/frontends.md, "Following main") ──────────────
+
+export type EngineState = {
+  commit: string;
+  short: string;
+  date: string;
+  subject: string;
+  modified: boolean;
+  previous: string | null;
+};
+
+export type FrontEndNote = { commit: string; kind: "break" | "interface" | "new" | "note"; text: string };
+
+export type UpdateInfo = {
+  from: string;
+  to: string;
+  toShort: string;
+  upToDate: boolean;
+  diverged: boolean;
+  totalCommits: number;
+  commits: { short: string; date: string; subject: string }[];
+  notes: FrontEndNote[];
+  frontendsDoc: boolean;
+  schemaDiff: string | null;
+  settingsList: boolean;
+  scriptOptions: string[];
+  envSwitches: boolean;
+  shaderChain: boolean;
+  requirements: boolean;
+  metalNeeded: string | null;
+};
+
+export type Applied = {
+  commit: string;
+  short: string;
+  date: string;
+  subject: string;
+  modified: boolean;
+  previous: string;
+  pip: string | null;
+};
+
+export const engineInfo = () => invoke<EngineState>("engine_info");
+/** Fetches nxnative's main and says what moving to it changes. */
+export const engineCheck = () => invoke<UpdateInfo>("engine_check");
+/** To main's fetched commit, or back to the one before the last update. */
+export const engineApply = (rollback: boolean) => invoke<Applied>("engine_apply", { rollback });
+export const engineRebuildHints = () => invoke<Record<string, string[]>>("engine_rebuild_hints");
 
 // ── Cheats (docs/frontends.md, "Cheats") ────────────────────────────────────
 

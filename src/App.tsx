@@ -2,7 +2,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { useLibrary } from "./hooks/useLibrary";
-import { libraryImport } from "./lib/ipc";
+import { engineRebuildHints, libraryImport } from "./lib/ipc";
 import Build from "./routes/Build";
 import Cheats from "./routes/Cheats";
 import Doctor from "./routes/Doctor";
@@ -21,6 +21,13 @@ export default function App() {
   /** A game folder or .nup dropped on the window, handed to the build view. */
   const [buildSource, setBuildSource] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
+  /** Games worth rebuilding with the current engine, and why. */
+  const [hints, setHints] = useState<Record<string, string[]>>({});
+
+  // Recomputed when the library changes (a build, an engine update emits library-changed).
+  useEffect(() => {
+    if (games) engineRebuildHints().then(setHints, () => setHints({}));
+  }, [games]);
 
   const toast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
@@ -103,7 +110,7 @@ export default function App() {
 
       <main className="flex min-h-0 flex-1">
         {view === "doctor" ? (
-          <Doctor />
+          <Doctor onError={toast} />
         ) : view === "prefs" ? (
           <Preferences gameCount={games?.length ?? 0} onError={toast} />
         ) : view === "cheats" && selected ? (
@@ -128,11 +135,16 @@ export default function App() {
           />
         ) : games === null ? null : (
           <>
-            <Library games={games} selectedId={selectedId} onSelect={setSelectedId} onAdd={pickApps} />
+            <Library games={games} hints={hints} selectedId={selectedId} onSelect={setSelectedId} onAdd={pickApps} />
             {selected && (
               <GameDetail
                 key={selected.titleId}
                 game={selected}
+                rebuildHints={hints[selected.titleId]}
+                onRebuild={(source) => {
+                  setBuildSource(source);
+                  setView("build");
+                }}
                 onOpenSettings={() => setView("settings")}
                 onOpenCheats={() => setView("cheats")}
                 onChanged={update}

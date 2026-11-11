@@ -30,6 +30,13 @@ pub struct Game {
     pub play_seconds: u64,
     #[serde(default)]
     pub last_exit: Option<ExitInfo>,
+    /// The engine commit this launcher built the app with; `None` for an app
+    /// built elsewhere (its engine version is unknown).
+    #[serde(default)]
+    pub built_with: Option<String>,
+    /// The game files the launcher built it from, for "Ricompila".
+    #[serde(default)]
+    pub source_path: Option<PathBuf>,
 }
 
 /// How the last session ended.
@@ -209,6 +216,9 @@ impl Library {
                 g.bundle_id = info.bundle_id;
                 g.app_path = app_path;
                 g.icon_path = icon_path;
+                // An app added by hand may have been rebuilt elsewhere: its
+                // engine version is unknown again (a build here sets it after).
+                g.built_with = None;
                 g.clone()
             }
             None => {
@@ -223,6 +233,8 @@ impl Library {
                     last_played: None,
                     play_seconds: 0,
                     last_exit: None,
+                    built_with: None,
+                    source_path: None,
                 };
                 self.games.push(g.clone());
                 g

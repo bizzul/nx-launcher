@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { EngineCard } from "../components/EngineCard";
 import { doctor, type DoctorReport } from "../lib/ipc";
 
-/** Phase 0's environment check: can this Mac build and run nxnative games? */
-export default function Doctor() {
+/** The engine's version, and whether this Mac can build and run its games. */
+export default function Doctor({ onError }: { onError: (m: string) => void }) {
   const [report, setReport] = useState<DoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -28,6 +29,8 @@ export default function Doctor() {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-8">
+        {/* A new engine can require another Metal compiler: check again after a change. */}
+        <EngineCard onError={onError} onChanged={runDoctor} />
         <div className="mb-6 flex items-end justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Ambiente</h2>

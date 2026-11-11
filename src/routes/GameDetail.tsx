@@ -6,6 +6,9 @@ import { gameLaunch, gameReveal, gameStop, libraryRemove, type Game } from "../l
 
 type Props = {
   game: Game;
+  /** Why rebuilding with the current engine is worth it (none: up to date or unknown). */
+  rebuildHints?: string[];
+  onRebuild: (sourcePath: string) => void;
   onOpenSettings: () => void;
   onOpenCheats: () => void;
   onChanged: (game: Game) => void;
@@ -19,7 +22,16 @@ const TONES: Record<Tone, string> = {
   error: "bg-red-500/10 text-red-700 dark:text-red-300",
 };
 
-export default function GameDetail({ game, onOpenSettings, onOpenCheats, onChanged, onRemoved, onError }: Props) {
+export default function GameDetail({
+  game,
+  rebuildHints,
+  onRebuild,
+  onOpenSettings,
+  onOpenCheats,
+  onChanged,
+  onRemoved,
+  onError,
+}: Props) {
   const [confirm, setConfirm] = useState<"stop" | "remove" | null>(null);
   const now = useNow(15_000);
   const running = game.runningSince !== null;
@@ -86,6 +98,22 @@ export default function GameDetail({ game, onOpenSettings, onOpenCheats, onChang
             </>
           )}
         </div>
+
+        {rebuildHints && rebuildHints.length > 0 && (
+          <div className="mt-4 rounded-lg bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+            <p className="font-medium">↻ Ricompila consigliato</p>
+            <ul className="mt-1 list-disc pl-4">
+              {rebuildHints.map((h) => (
+                <li key={h}>{h}</li>
+              ))}
+            </ul>
+            {game.sourcePath && !running && (
+              <button onClick={() => onRebuild(game.sourcePath!)} className="btn mt-2 w-full">
+                Ricompila
+              </button>
+            )}
+          </div>
+        )}
 
         {last && !running && (
           <p className={`mt-4 rounded-lg p-3 text-xs leading-relaxed ${TONES[last.tone]}`}>

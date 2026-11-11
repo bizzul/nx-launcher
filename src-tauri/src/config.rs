@@ -22,6 +22,9 @@ pub struct Config {
     /// (`DM_HOME_QUIT_TEXT`, `DM_CTRL_PROMPT_TEXT`) when starting a game.
     #[serde(default = "yes")]
     pub italian_prompts: bool,
+    /// The engine commit before the last update, for "Torna alla precedente".
+    #[serde(default)]
+    pub previous_engine: Option<String>,
 }
 
 fn yes() -> bool {
@@ -30,7 +33,7 @@ fn yes() -> bool {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { prod_keys: None, cloud_saves_folder: None, italian_prompts: true }
+        Self { prod_keys: None, cloud_saves_folder: None, italian_prompts: true, previous_engine: None }
     }
 }
 

@@ -282,6 +282,8 @@ pub struct BuiltGame {
 pub struct Snapshot {
     pub source: SourceInfo,
     pub options: Options,
+    /// The engine commit the build runs, recorded on the game it makes.
+    pub engine_commit: Option<String>,
     pub status: Status,
     pub started_at: u64,
     pub finished_at: Option<u64>,
@@ -303,6 +305,7 @@ impl Snapshot {
         Self {
             source,
             options,
+            engine_commit: None,
             status: Status::Running,
             started_at: now(),
             finished_at: None,
@@ -496,7 +499,8 @@ pub async fn start(
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
-    let snap = Snapshot::new(pre.source, opts);
+    let mut snap = Snapshot::new(pre.source, opts);
+    snap.engine_commit = crate::updater::head(&engine.root).await.ok();
     *state.build.lock().unwrap() = Some(BuildRun {
         snap: snap.clone(),
         pgid: child.id().map(|p| p as i32),
@@ -577,11 +581,12 @@ pub async fn start(
         let _ = err_task.await;
 
         // Decide, then add the app to the library outside the lock.
-        let (mut result, out) = {
+        let (mut result, out, engine_commit, source) = {
             let slot = st.build.lock().unwrap();
             let run = slot.as_ref().expect("build slot");
             let out = run.snap.game.as_ref().and_then(|g| g.out.clone());
-            (outcome(&run.snap, status, run.cancel_requested), out)
+            let s = &run.snap;
+            (outcome(s, status, run.cancel_requested), out, s.engine_commit.clone(), s.source.path.clone())
         };
         let mut imported = None;
         if result.0 == Status::Succeeded && opts.target == Target::Ios {
@@ -592,7 +597,16 @@ pub async fn start(
         } else if result.0 == Status::Succeeded {
             match out {
                 Some(out) => match crate::import_app(&st, out).await {
-                    Ok(game) => imported = Some(game.title_id),
+                    Ok(game) => {
+                        // Remember what built it, for the rebuild hints and "Ricompila".
+                        let mut lib = st.library.lock().unwrap();
+                        if let Some(g) = lib.get_mut(&game.title_id) {
+                            g.built_with = engine_commit.clone();
+                            g.source_path = Some(source.clone());
+                        }
+                        let _ = lib.save();
+                        imported = Some(game.title_id)
+                    }
                     Err(e) => result = (Status::Failed, Some(format!("App creata, ma non aggiunta alla libreria: {e}"))),
                 },
                 None => result = (Status::Failed, Some("Lo script non ha detto dove ha scritto l'app".into())),
