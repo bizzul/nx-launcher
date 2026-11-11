@@ -6,6 +6,14 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+/// Prints "ok", or the modules missing for the build script
+/// (`check_prereqs` in build_ipa_from_nsp.py).
+const PY_MODULES: &str = "import importlib\n\
+def has(m):\n    try:\n        importlib.import_module(m); return True\n    except Exception:\n        return False\n\
+miss = [m for m in ('lz4.block', 'capstone', 'fontTools', 'zbic') if not has(m)]\n\
+miss += [] if has('compression.zstd') or has('backports.zstd') else ['backports.zstd']\n\
+print(', '.join(miss) or 'ok')";
+
 /// Homebrew tools the build script calls.
 const BREW_TOOLS: [&str; 3] = ["xcodegen", "glslang", "zstd"];
 
@@ -142,6 +150,20 @@ pub async fn doctor(engine: &Engine) -> DoctorReport {
         fix: (!py_ok).then(|| {
             "python3 -m venv engine-venv && engine-venv/bin/pip install -r engine/.github/requirements/tools.txt".into()
         }),
+    });
+
+    // 2b. The modules the build script imports, as its check_prereqs tests
+    //     them: zstd is built into Python from 3.14, backports.zstd before.
+    //     requirements/tools.txt alone does not install backports.zstd.
+    let (mods_ok, missing) = run(&engine.python, &["-c", PY_MODULES], &path).await;
+    let mods_ok = mods_ok && missing == "ok";
+    let pip = engine.pip().display().to_string();
+    checks.push(Check {
+        id: "pymodules",
+        label: "Moduli Python del motore",
+        ok: mods_ok,
+        detail: if mods_ok { "lz4, capstone, fontTools, zbic, zstd".into() } else { format!("mancano: {missing}") },
+        fix: (!mods_ok).then(|| format!("{pip} install lz4 \"capstone>=5,<6\" fonttools zbic backports.zstd")),
     });
 
     // 3. The selected Xcode (its Metal compiler is what the next check holds to the lock).

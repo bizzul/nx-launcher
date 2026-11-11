@@ -78,6 +78,10 @@ git submodule add https://github.com/seedds/nxnative.git engine
 ```bash
 python3 -m venv engine-venv && engine-venv/bin/pip install -r engine/.github/requirements/tools.txt
 ```
+```bash
+engine-venv/bin/pip install backports.zstd
+```
+`tools.txt` non lo contiene, ma lo script di build lo richiede con Python prima della 3.14 (vedi il comando di installazione nel README di nxnative). Il controllo «Moduli Python del motore» nella scheda Ambiente lo verifica.
 nxnative **non ha release né tag**: il front end fissa un commit e lo aggiorna a mano. Il submodule git fa esattamente questo. Per aggiornare:
 ```bash
 git -C engine fetch && git -C engine log --oneline HEAD..origin/main --grep='^Front-ends:'
