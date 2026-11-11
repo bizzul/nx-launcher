@@ -1,0 +1,219 @@
+# NX Launcher: piano di setup
+
+Un'app per Mac che gestisce una libreria di giochi costruiti con [nxnative](https://github.com/seedds/nxnative), li compila dall'interfaccia (senza terminale), ne regola le impostazioni e li avvia.
+
+---
+
+## 0. Come funziona nxnative e che cosa deve fare il launcher
+
+nxnative **non è un emulatore**: lo script `scripts/build_ipa_from_nsp.py` trasforma un gioco (NSP/XCI/NSZ, `.nup` o una cartella di dump) in una **app Mac** (`--platform mac-app`) o in un **IPA** da installare via sideload. Il codice del gioco gira nativo su Apple silicon e la grafica passa su Metal.
+
+Il repo ha un contratto apposta per i front end: [`docs/frontends.md`](https://github.com/seedds/nxnative/blob/main/docs/frontends.md). Il launcher si appoggia solo a quello, senza patch a nxnative. Le interfacce sono cinque:
+
+| # | Interfaccia | Cosa usa il launcher |
+|---|---|---|
+| 1 | **Build** | `python3 scripts/build_ipa_from_nsp.py <cartella> --progress json --platform mac-app --work-dir <dir> -o <out>` stampa **una riga JSON per evento** su stdout (`stage`, `step`, `progress`, `stage_end`, `game`, `shaders_stale`, `say`). Exit code: `0` ok, `1` errore (l'ultimo `say` comincia con `[RED] `), `2` argomenti sbagliati (solo stderr, nessun JSON), `130` interrotto. |
+| 2 | **Lista impostazioni** | `<App>.app/Contents/Resources/dm/launcher.json` (schema 1). Ogni riga ha `env`, `kind` (`choice`, `range` o `toggle`), `section`, `label`, `default` e i campi opzionali `level`, `needs`, `base`. JSON Schema: `docs/launcher.schema.json`. |
+| 3 | **Scelte salvate** | Dominio preferenze `org.nxnative.<titleID>`, chiave `launcher.<ENV>` (stringa). Si salvano **solo i valori diversi dal default**. Per le cloud save c'è la chiave `cloudSaves.folder`. |
+| 4 | **Avvio** | Esegue `<App>.app/Contents/MacOS/nxnative` con `DM_LAUNCHER=0` (salta la finestra impostazioni interna) e con eventuali override **temporanei** nell'ambiente. Exit: `0` uscita normale, `70` GPU revocata da macOS, `134` abort. Log in `~/Library/Logs/nxnative/<titleID>.log`, salvataggi in `~/Library/Application Support/nxnative/<titleID>/save/`. Il titleID è `DMTitleID` nell'`Info.plist`. |
+| 5 | **Extra** | Cheat (`…/<titleID>/cheats/<buildID>.txt` + `.enabled`), cartella cloud save, testi in italiano del prompt Home (`DM_HOME_QUIT_TEXT`). |
+
+> **Esistono già dei front end**, tutti in Swift: [NX2Apple](https://github.com/LNPANDY/NX2Apple) (circa 6k ★), [NX Play](https://github.com/varyform/nx-native-wrapper) e [LumaNX](https://github.com/Xc1Ym/LumaNX). Vale la pena guardarli per idee e UX. Il nostro è un progetto per imparare e per avere il launcher fatto a modo nostro.
+
+---
+
+## 1. Electron o Rust? → **Tauri 2** (backend Rust + UI web)
+
+| | Electron | **Tauri 2** | Rust puro (egui/iced) | SwiftUI |
+|---|---|---|---|---|
+| Dimensione app | ~150–250 MB | **~10–15 MB** | ~10 MB | ~5 MB |
+| RAM a riposo | 200–400 MB | **40–80 MB** | 30 MB | 30 MB |
+| UI a griglia con copertine | facile (web) | **facile (web)** | laboriosa | facile |
+| Processi, JSONL, plist, CFPreferences | Node + `child_process`; CFPreferences solo via `defaults` | **`tokio::process`, `serde`, crate `plist`, `core-foundation`** (API nativa) | come Tauri | nativo |
+| Multipiattaforma | sì | sì | sì | no |
+| Curva di apprendimento | bassa | media (Rust) | alta | media |
+
+**Perché Tauri:**
+1. **nxnative gira solo su Mac con Apple silicon**, quindi il vantaggio principale di Electron (lo stesso Chromium su ogni sistema) qui non serve. Tauri usa WKWebView, che è già nel sistema.
+2. **Il launcher resta aperto mentre il gioco gira.** I giochi Switch 2 usano molta RAM e GPU, e Electron occuperebbe 300 MB inutilmente.
+3. **La parte difficile è il "sistema"**: gestire processi figli, leggere l'output JSONL in streaming, inoltrare i segnali, leggere i plist e scrivere CFPreferences. In Rust tutto questo è tipizzato e diretto, senza passare da comandi shell.
+4. **La UI resta web** (React + TS), quindi la griglia giochi, i form delle impostazioni e le progress bar sono veloci da fare.
+
+---
+
+## 2. Prerequisiti: stato di questo Mac (verificato l'11/11/2026)
+
+| Requisito | Stato |
+|---|---|
+| macOS 26.6+ su Apple silicon | ✅ macOS 27.0.1, arm64 |
+| Xcode 27.2 (compilatore Metal degli shader) | ✅ 27.2 selezionato |
+| Python 3.12+ **arm64** (non Rosetta) | ✅ 3.12.0 arm64 (python.org) |
+| Homebrew | ✅ 7.0.12 |
+| Node + pnpm (UI) | ✅ Node 24.12, pnpm 12.15 |
+| **Rust** | ❌ **da installare** |
+| Spazio disco (≈ 2× il gioco + 10 GB per build) | ⚠️ 186 GB liberi: basta per uno o due giochi grossi. Meglio un SSD esterno per le cartelle di build. |
+
+---
+
+## 3. Setup passo per passo
+
+### 3.1 Rust
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+```bash
+rustup default stable && cargo --version
+```
+
+### 3.2 Motore nxnative (una volta sola)
+```bash
+xcodebuild -downloadComponent MetalToolchain
+```
+```bash
+brew install xcodegen zstd glslang
+```
+```bash
+git submodule add https://github.com/seedds/nxnative.git engine
+```
+```bash
+python3 -m venv engine-venv && engine-venv/bin/pip install -r engine/.github/requirements/tools.txt
+```
+nxnative **non ha release né tag**: il front end fissa un commit e lo aggiorna a mano. Il submodule git fa esattamente questo. Per aggiornare:
+```bash
+git -C engine fetch && git -C engine log --oneline HEAD..origin/main --grep='^Front-ends:'
+```
+Le righe `Front-ends: break|interface|new` indicano cosa cambia per il launcher.
+
+### 3.3 Scaffold dell'app Tauri
+```bash
+pnpm create tauri-app
+```
+Risposte: nome `nx-launcher`, frontend **TypeScript**, package manager **pnpm**, framework **React**. Poi:
+```bash
+pnpm tauri add dialog && pnpm tauri add opener && pnpm tauri add store
+```
+Crate Rust in `src-tauri/Cargo.toml`: `serde`, `serde_json`, `tokio` (features `process`, `io-util`, `macros`), `plist`, `core-foundation`, `nix` (segnali), `anyhow`, `thiserror`.
+UI: Tailwind + shadcn/ui.
+
+### 3.4 Avvio in sviluppo
+```bash
+pnpm tauri dev
+```
+
+---
+
+## 4. Architettura
+
+```
+┌────────────────── UI (React + TS dentro WKWebView) ──────────────────┐
+│  Libreria (griglia)  ·  Dettaglio gioco  ·  Build  ·  Impostazioni  │
+└──────────────┬──────────────────────────────────▲────────────────────┘
+      invoke() │                                  │ Channel<Event> (stream)
+┌──────────────▼──────────────────────────────────┴────────────────────┐
+│                       Core Rust (src-tauri)                          │
+│  library   builder   launcher_json   prefs   runner   engine         │
+└────┬──────────┬────────────┬───────────┬─────────┬────────┬──────────┘
+     │ scan     │ spawn      │ read      │ CFPrefs │ spawn  │ git / check
+     ▼          ▼            ▼           ▼         ▼        ▼
+  cartelle  build_ipa_    launcher    org.nxnative. Contents/  engine/
+  giochi    from_nsp.py   .json       <titleID>    MacOS/
+            (JSONL)                                nxnative
+```
+
+| Modulo Rust | Responsabilità |
+|---|---|
+| `library.rs` | `library.json` in `~/Library/Application Support/NXLauncher/`; importa le `.app` esistenti (legge `Info.plist` → `DMTitleID`, nome, icona); aggiunge sorgenti (cartella NSP, `.nup`, dump). |
+| `builder.rs` | Lancia Python con `--progress json`, legge stdout riga per riga, **converte ogni riga in un enum `BuildEvent`** e lo invia alla UI su un `Channel`. Cattura stderr. Annulla con SIGINT (exit 130). Una build alla volta. |
+| `launcher_json.rs` | Tipi serde per lo schema 1 di `launcher.json`. Ignora i campi sconosciuti e accetta sezioni nuove. |
+| `prefs.rs` | Legge e scrive `launcher.<ENV>` con `CFPreferencesSetAppValue` sul dominio `org.nxnative.<titleID>`. Rimuove la chiave quando il valore torna al default. |
+| `runner.rs` | Avvia il gioco con `DM_LAUNCHER=0` e gli override; segue lo stato in esecuzione; traduce l'exit code in un messaggio; tiene il conto del tempo di gioco; apre il log. |
+| `engine.rs` | Controlli all'avvio (Python arm64, Xcode 27.2, `xcodegen`, `glslang`, `zstd`, spazio disco), commit fissato, flusso di aggiornamento. |
+
+**Modello dati, una voce di libreria:**
+```ts
+type Game = {
+  id: string;              // uuid locale
+  titleId: string;         // DMTitleID, es. "0400C3F00006E000"
+  name: string; version?: string;
+  source?: { kind: "nsp" | "nup" | "dump"; path: string };
+  appPath?: string;        // .app costruita
+  ipaPath?: string;
+  iconPath?: string;       // copia nostra: icons/<titleId>.jpg
+  workDir?: string;        // --work-dir per questo gioco
+  lastBuild?: { ok: boolean; at: string; engineCommit: string };
+  lastPlayed?: string; playSeconds: number;
+};
+```
+
+---
+
+## 5. Roadmap per fasi
+
+### Fase 0: setup (½ giornata)
+Sezione 3 completa. Traguardo: `pnpm tauri dev` apre una finestra vuota e il motore compila un gioco **da terminale**.
+
+### Fase 1: libreria e avvio (MVP)
+- Import di una `.app` già costruita (drag & drop o pulsante) → lettura di `Info.plist` → griglia con icona e nome.
+- **Play** → spawn di `Contents/MacOS/nxnative`, badge "In gioco", exit code tradotto (`70` → "macOS ha revocato la GPU", `134` → "crash, apri il log").
+- "Mostra log", "Mostra salvataggi", "Mostra nel Finder".
+- **Traguardo:** si avvia dal launcher un gioco costruito da CLI.
+
+### Fase 2: impostazioni per gioco
+- Lettura di `launcher.json` → form dinamico: `choice` → select, `range` → slider (con `base` mostra la risoluzione, es. 0.75 → 1200×675), `toggle` → switch.
+- Prima le righe `level: "basic"`, le altre sotto "Avanzate". Le righe con `needs` si vedono solo quando la loro condizione è vera.
+- Salvataggio solo dei valori diversi dal default; pulsante "Ripristina default testati".
+- "Solo per questa partita": override nell'ambiente, senza scrivere le preferenze.
+- **Traguardo:** si cambia il frame rate dal launcher e il gioco lo applica, anche se poi lo apri dal Finder.
+
+### Fase 3: build dall'interfaccia
+- Aggiungi gioco: cartella o `.nup`; selettore per `prod.keys` (**si salva solo il percorso**, il file non viene mai copiato).
+- Controllo dello spazio prima di partire.
+- Vista build: barra per stage (`k`/`n`, dove `n` può crescere), barra di `progress` (indeterminata quando `frac` è `null`), ETA, log dei `say` (rossi quelli `[RED] `), pulsante Annulla.
+- Evento `game` → **copia subito l'icona** (in una build IPA senza `--keep-extracted` l'originale viene cancellato a fine build).
+- Fine build: exit code + stderr; con `0` aggiorna `appPath` e mette il gioco in libreria.
+- **Traguardo:** da `.nup` a gioco avviabile senza aprire il terminale.
+
+### Fase 4: extra
+- Cartella cloud save unica per tutti i giochi (`cloudSaves.folder` in ogni dominio).
+- Gestione cheat: import di `<buildID>.txt` e spunte in `.enabled`, scritte **prima** dell'avvio.
+- Prompt Home in italiano tramite `DM_HOME_QUIT_TEXT`.
+- Export IPA (con `--romfs separate` per i giochi grandi).
+- Statistiche di gioco, ultimo giocato, ordinamento e filtri.
+
+### Fase 5: aggiornamento del motore
+- Pulsante "Aggiorna nxnative": fetch → mostra le righe `Front-ends:` e il diff di `docs/launcher.schema.json` → conferma → checkout.
+- I giochi la cui ultima build usava un commit diverso ricevono il badge "Ricompila consigliato".
+
+---
+
+## 6. Insidie note (dal contratto e dall'ambiente)
+
+1. **PATH:** un'app aperta dal Finder **non eredita il PATH della shell**, quindi `xcodegen`, `glslang` e `zstd` (in `/opt/homebrew/bin`) non vengono trovati. Quando lanci Python, imposta esplicitamente `PATH=/opt/homebrew/bin:/usr/bin:/bin:…`.
+2. **Niente App Sandbox:** un'app sandboxed non può scrivere nel dominio preferenze `org.nxnative.*`. Va distribuita fuori dal Mac App Store (firma ad-hoc o Developer ID).
+3. **Python arm64:** sotto Rosetta lo script si ferma. Controllalo all'avvio con `platform.machine()`.
+4. **Exit code 2 = nessun JSON:** cattura sempre stderr, altrimenti l'errore si perde.
+5. **I log del gioco in esecuzione non sono un'API:** mostrali, ma non leggerli per dedurre stati (cambiano formulazione senza avviso).
+6. **Cheat:** l'host li legge solo all'avvio o con ⌘R. Si scrivono prima del Play.
+7. **Chiavi e giochi:** il launcher non include, non copia e non invia mai `prod.keys` né file di gioco. Usa solo i percorsi scelti dall'utente.
+
+---
+
+## 7. Struttura del repo
+
+```
+nxnative/                  ← questa cartella = progetto launcher
+├─ PLAN.md
+├─ engine/                 ← submodule seedds/nxnative @ commit fissato
+├─ engine-venv/            ← venv Python del motore (in .gitignore)
+├─ src/                    ← UI React
+│  ├─ routes/  Library.tsx · GameDetail.tsx · BuildView.tsx · Settings.tsx
+│  ├─ components/SettingsForm.tsx   ← disegna launcher.json
+│  └─ lib/ipc.ts                    ← wrapper tipizzati di invoke/Channel
+└─ src-tauri/
+   ├─ tauri.conf.json
+   └─ src/
+      ├─ lib.rs  library.rs  builder.rs  launcher_json.rs
+      └─ prefs.rs  runner.rs  engine.rs
+```
+
+> Consiglio: rinomina la cartella in `nx-launcher` per non confonderla con il motore (`engine/`).
