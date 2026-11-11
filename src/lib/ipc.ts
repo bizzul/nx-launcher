@@ -166,6 +166,10 @@ export type Config = {
   italianPrompts: boolean;
   /** Look up covers on the internet (title ID to Nlib, name to Nintendo's eShop search). */
   covers: boolean;
+  /** The archive: one folder per game with its base game, updates and DLC. */
+  archiveFolder: string | null;
+  /** Download titledb's list to say which updates and DLC the archive lacks. */
+  titledb: boolean;
 };
 export const configGet = () => invoke<Config>("config_get");
 export const configSetCovers = (on: boolean) => invoke<Config>("config_set_covers", { on });
@@ -176,6 +180,86 @@ export const configSetCloudFolder = (path: string | null) =>
   invoke<Config>("config_set_cloud_folder", { path });
 export const configSetItalianPrompts = (on: boolean) =>
   invoke<Config>("config_set_italian_prompts", { on });
+/** The archive's folder; null forgets it (its files stay). */
+export const configSetArchive = (path: string | null) => invoke<Config>("config_set_archive", { path });
+export const configSetTitledb = (on: boolean) => invoke<Config>("config_set_titledb", { on });
+
+// ── The archive (archive.rs, importer.rs, titledb.rs) ───────────────────────
+
+export type ArchivePiece = {
+  kind: "base" | "update" | "dlc";
+  titleId: string;
+  version: number;
+  /** The file it is in; empty for the dump in the game's folder itself. */
+  file: string;
+};
+
+export type ArchiveGame = {
+  folder: string;
+  /** The base game's title ID; empty when no file says it. */
+  titleId: string;
+  name: string;
+  sizeBytes: number;
+  /** What a build of the folder reads: packages over a NUP over a dump. */
+  format: "package" | "nup" | "dump" | null;
+  pieces: ArchivePiece[];
+  hasBase: boolean;
+  /** The newest update in the folder. */
+  update: number | null;
+  dlc: string[];
+  /** titledb lists the game; the three fields below are only filled then. */
+  known: boolean;
+  latestUpdate: number | null;
+  updateMissing: boolean;
+  missingDlc: string[];
+  issues: string[];
+};
+
+export type ArchiveView = {
+  root: string | null;
+  games: ArchiveGame[];
+  /** Game files lying in the archive's folder itself. */
+  loose: string[];
+  titledbOn: boolean;
+  /** When titledb's list was downloaded (Unix seconds). */
+  titledbAt: number | null;
+  /** Older than a day, or missing. */
+  titledbStale: boolean;
+};
+
+export type ImportLine = { text: string; tone: "info" | "ok" | "warn" | "error" };
+
+export type ImportSnapshot = {
+  running: boolean;
+  cancelled: boolean;
+  moving: boolean;
+  step: string;
+  /** 0–1, or null when the work cannot be measured. */
+  frac: number | null;
+  log: ImportLine[];
+  games: string[];
+  added: number;
+  skipped: number;
+  failed: number;
+  startedAt: number;
+  finishedAt: number | null;
+};
+
+export const archiveList = () => invoke<ArchiveView>("archive_list");
+/** Downloads titledb's whole list (about 3 MB). */
+export const titledbUpdate = () => invoke<void>("titledb_update");
+/** Files, folders, .zip / .rar / .7z into the archive; `moving` leaves no copy behind. */
+export const archiveImport = (paths: string[], moving: boolean) =>
+  invoke<ImportSnapshot>("archive_import", { paths, moving });
+export const archiveImportStatus = () => invoke<ImportSnapshot | null>("archive_import_status");
+export const archiveImportCancel = () => invoke<void>("archive_import_cancel");
+export const archiveImportDismiss = () => invoke<void>("archive_import_dismiss");
+/** Opens the archive's folder, or a game's (worked out in Rust from the title ID). */
+export const archiveReveal = (titleId?: string) => invoke<void>("archive_reveal", { titleId: titleId ?? null });
+
+export const onArchiveImport = (cb: (snap: ImportSnapshot) => void) =>
+  listen<ImportSnapshot>("archive-import", (e) => cb(e.payload));
+export const onArchiveChanged = (cb: () => void) => listen("archive-changed", () => cb());
 
 // ── The engine's version (docs/frontends.md, "Following main") ──────────────
 
@@ -360,7 +444,7 @@ export const fileSrc = (path: string) => convertFileSrc(path);
 
 /** The game's picture, served by Tauri's asset protocol: its cover when one
  * was found, else the cached PNG of the app's icon. */
-export const iconSrc = (game: Game) => {
+export const iconSrc = (game: Pick<Game, "coverPath" | "iconPath">) => {
   const path = game.coverPath ?? game.iconPath;
   return path ? convertFileSrc(path) : null;
 };

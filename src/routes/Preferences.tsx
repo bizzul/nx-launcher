@@ -3,10 +3,12 @@ import { useEffect, useState } from "react";
 import { KeysRow } from "../components/KeysRow";
 import {
   configGet,
+  configSetArchive,
   configSetCloudFolder,
   configSetCovers,
   configSetItalianPrompts,
   configSetKeys,
+  configSetTitledb,
   type Config,
 } from "../lib/ipc";
 
@@ -34,6 +36,11 @@ export default function Preferences({ gameCount, onError }: { gameCount: number;
   const pickCloud = async () => {
     const path = await open({ directory: true, title: "Cartella per i salvataggi in cloud" });
     if (typeof path === "string") apply(() => configSetCloudFolder(path), applied(gameCount));
+  };
+
+  const pickArchive = async () => {
+    const path = await open({ directory: true, title: "Cartella archivio: una sottocartella per ogni gioco" });
+    if (typeof path === "string") apply(() => configSetArchive(path), "Cartella archivio impostata");
   };
 
   const pickKeys = async () => {
@@ -100,6 +107,39 @@ export default function Preferences({ gameCount, onError }: { gameCount: number;
             </p>
           </div>
           <Switch on={config.covers} onToggle={() => apply(() => configSetCovers(!config.covers))} />
+        </section>
+
+        <section className="mt-4 rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
+          <h3 className="font-medium">Cartella archivio</h3>
+          <p className="mt-1 text-sm text-neutral-500">
+            Dove tieni i file dei tuoi giochi, anche su un disco esterno: una sottocartella per gioco, con gioco base,
+            update e DLC. La scheda Archivio importa lì file, cartelle, .zip, .rar e .7z.
+          </p>
+          <p className="mt-3 truncate font-mono text-xs" title={config.archiveFolder ?? ""}>
+            {config.archiveFolder ?? <span className="text-neutral-500">non impostata</span>}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button onClick={pickArchive} className="btn">
+              {config.archiveFolder ? "Cambia…" : "Scegli cartella…"}
+            </button>
+            {config.archiveFolder && (
+              <button onClick={() => apply(() => configSetArchive(null), "Cartella archivio dimenticata")} className="btn">
+                Dimentica
+              </button>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-4 flex items-start gap-4 rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
+          <div className="flex-1">
+            <h3 className="font-medium">Update e DLC mancanti</h3>
+            <p className="mt-1 text-sm text-neutral-500">
+              Una volta al giorno scarica l'elenco pubblico di titledb (circa 3 MB, da GitHub) e lo confronta con
+              l'archivio. Viene scaricato tutto l'elenco, quindi non parte niente sui tuoi giochi. Conosce pochi giochi
+              Switch 2.
+            </p>
+          </div>
+          <Switch on={config.titledb} onToggle={() => apply(() => configSetTitledb(!config.titledb))} />
         </section>
 
         <KeysRow keys={config.prodKeys} onPick={pickKeys} onClear={() => apply(() => configSetKeys(null))} />

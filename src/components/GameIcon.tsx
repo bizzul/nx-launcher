@@ -1,7 +1,13 @@
 import { iconSrc, type Game } from "../lib/ipc";
 
 /** The game's icon, or its initials on a tinted tile when it was packed without one. */
-export function GameIcon({ game, className = "" }: { game: Game; className?: string }) {
+export function GameIcon({
+  game,
+  className = "",
+}: {
+  game: Pick<Game, "name" | "titleId" | "coverPath" | "iconPath">;
+  className?: string;
+}) {
   const src = iconSrc(game);
   if (src) {
     return (

@@ -1,13 +1,16 @@
+mod archive;
 mod build;
 mod cheats;
 mod config;
 mod covers;
 mod engine;
 mod gamelog;
+mod importer;
 mod library;
 mod prefs;
 mod runner;
 mod settings;
+mod titledb;
 mod updater;
 
 use config::ConfigStore;
@@ -15,7 +18,7 @@ use library::{Game, Library};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
@@ -26,6 +29,10 @@ pub struct AppState {
     config: Mutex<ConfigStore>,
     /// The build in progress, or the last one until the player dismisses it.
     build: Mutex<Option<build::BuildRun>>,
+    /// The archive import in progress, or the last one until dismissed.
+    import: Mutex<Option<importer::ImportRun>>,
+    /// titledb's list as last read, kept while its file is the same.
+    titledb: Mutex<Option<Arc<titledb::Titledb>>>,
 }
 
 /// A library entry as the UI sees it.
@@ -269,6 +276,173 @@ fn config_set_covers(app: AppHandle, state: State<AppState>, on: bool) -> Result
         fetch_covers(&app, None);
     }
     Ok(config)
+}
+
+/// The archive's folder (`archive.rs`), or `None` to forget it (its files stay).
+#[tauri::command]
+fn config_set_archive(state: State<AppState>, path: Option<String>) -> Result<config::Config, String> {
+    let folder = match path.as_deref() {
+        None | Some("") => None,
+        Some(p) => {
+            let f = PathBuf::from(p);
+            if !f.is_dir() {
+                return Err(format!("{} non è una cartella", f.display()));
+            }
+            Some(f)
+        }
+    };
+    let mut store = state.config.lock().unwrap();
+    store.config.archive_folder = folder;
+    store.save().map_err(|e| e.to_string())?;
+    Ok(store.config.clone())
+}
+
+#[tauri::command]
+fn config_set_titledb(state: State<AppState>, on: bool) -> Result<config::Config, String> {
+    let mut store = state.config.lock().unwrap();
+    store.config.titledb = on;
+    store.save().map_err(|e| e.to_string())?;
+    Ok(store.config.clone())
+}
+
+// ── The archive (archive.rs, importer.rs, titledb.rs) ───────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveView {
+    root: Option<PathBuf>,
+    games: Vec<archive::ArchiveGame>,
+    /// Game files lying in the archive's folder itself, outside a game's.
+    loose: Vec<PathBuf>,
+    titledb_on: bool,
+    /// When titledb's list was downloaded (Unix seconds); `None`: never.
+    titledb_at: Option<u64>,
+    /// The list is older than a day (or missing): worth downloading again.
+    titledb_stale: bool,
+}
+
+fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+/// titledb's cached list, read again only when its file changed.
+fn cached_titledb(state: &AppState, data_dir: &std::path::Path) -> Option<Arc<titledb::Titledb>> {
+    let at = titledb::cached_at(data_dir)?;
+    let mut slot = state.titledb.lock().unwrap();
+    if slot.as_ref().map(|db| db.fetched_at) != Some(at) {
+        *slot = titledb::load(data_dir).map(Arc::new);
+    }
+    slot.clone()
+}
+
+/// The archive's games, each compared with titledb's cached list (no
+/// download here: `titledb_update` does that, so the list never waits on it).
+#[tauri::command]
+async fn archive_list(app: AppHandle, state: State<'_, AppState>) -> Result<ArchiveView, String> {
+    let (root, on) = {
+        let c = &state.config.lock().unwrap().config;
+        (c.archive_folder.clone(), c.titledb)
+    };
+    let data_dir = data_dir(&app)?;
+    let db = if on { cached_titledb(&state, &data_dir) } else { None };
+    let titledb_at = db.as_ref().map(|d| d.fetched_at);
+    let titledb_stale = on && titledb_at.is_none_or(|t| library::now().saturating_sub(t) >= titledb::MAX_AGE_SECS);
+    let Some(root) = root else {
+        return Ok(ArchiveView { root: None, games: vec![], loose: vec![], titledb_on: on, titledb_at, titledb_stale });
+    };
+    let dir = root.clone();
+    let scan = tauri::async_runtime::spawn_blocking(move || archive::scan(&dir)).await.map_err(|e| e.to_string())??;
+    let mut games = scan.games;
+    if let Some(db) = &db {
+        games.iter_mut().for_each(|g| g.check(db));
+    }
+    Ok(ArchiveView { root: Some(root), games, loose: scan.loose, titledb_on: on, titledb_at, titledb_stale })
+}
+
+/// Downloads titledb's whole list (about 3 MB), when it is turned on.
+#[tauri::command]
+async fn titledb_update(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if !state.config.lock().unwrap().config.titledb {
+        return Err("Il controllo di update e DLC è spento in Impostazioni".into());
+    }
+    titledb::download(&data_dir(&app)?).await
+}
+
+/// Brings game files into the archive, on a thread of its own: progress
+/// comes as `archive-import` events, the end as `archive-changed`.
+#[tauri::command]
+fn archive_import(
+    app: AppHandle,
+    state: State<AppState>,
+    paths: Vec<PathBuf>,
+    moving: bool,
+) -> Result<importer::Snapshot, String> {
+    let (root, keys) = {
+        let c = &state.config.lock().unwrap().config;
+        (c.archive_folder.clone(), c.prod_keys.clone())
+    };
+    let root = root.ok_or("Scegli prima la cartella archivio")?;
+    if moving {
+        // The files of a build in progress stay where the script reads them.
+        let slot = state.build.lock().unwrap();
+        if let Some(src) = slot.as_ref().filter(|r| r.running()).map(|r| r.snap.source.path.clone()) {
+            if paths.iter().any(|p| p.starts_with(&src) || src.starts_with(p)) {
+                return Err("Quei file sono in uso dalla build in corso: aspetta che finisca".into());
+            }
+        }
+    }
+    let names = state
+        .library
+        .lock()
+        .unwrap()
+        .games()
+        .iter()
+        .filter_map(|g| Some((u64::from_str_radix(&g.title_id, 16).ok()?, g.name.clone())))
+        .collect();
+    let req = importer::Request {
+        paths,
+        root,
+        moving,
+        keys: keys.filter(|k| k.is_file()),
+        nx_extract: engine::Engine::dev_default().root.join("dm/tools/nx_extract_bin/nx_extract"),
+        names,
+    };
+    importer::start(&app, req)
+}
+
+#[tauri::command]
+fn archive_import_status(state: State<AppState>) -> Option<importer::Snapshot> {
+    state.import.lock().unwrap().as_ref().map(|r| r.snap.clone())
+}
+
+#[tauri::command]
+fn archive_import_cancel(state: State<AppState>) -> Result<(), String> {
+    importer::cancel(&state)
+}
+
+/// Forgets a finished import's report.
+#[tauri::command]
+fn archive_import_dismiss(state: State<AppState>) {
+    let mut slot = state.import.lock().unwrap();
+    if !slot.as_ref().is_some_and(importer::ImportRun::running) {
+        *slot = None;
+    }
+}
+
+/// Opens the archive's folder, or a game's: the path is worked out here from
+/// the archive, not taken from the web view.
+#[tauri::command]
+fn archive_reveal(app: AppHandle, state: State<AppState>, title_id: Option<String>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let root = state.config.lock().unwrap().config.archive_folder.clone().ok_or("Nessuna cartella archivio")?;
+    let dir = match title_id {
+        None => root,
+        Some(id) => {
+            let app_id = u64::from_str_radix(&id, 16).map_err(|_| format!("Title ID non valido: {id}"))?;
+            archive::folder_for(&root, app_id).ok_or_else(|| format!("{id} non è nell'archivio"))?
+        }
+    };
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
 }
 
 // ── Covers (covers.rs) ──────────────────────────────────────────────────────
@@ -576,6 +750,8 @@ pub fn run() {
                 running: Mutex::new(HashMap::new()),
                 config: Mutex::new(ConfigStore::load(&data_dir)),
                 build: Mutex::new(None),
+                import: Mutex::new(None),
+                titledb: Mutex::new(None),
             });
             fetch_covers(app.handle(), None);
             Ok(())
@@ -603,6 +779,15 @@ pub fn run() {
             config_set_cloud_folder,
             config_set_italian_prompts,
             config_set_covers,
+            config_set_archive,
+            config_set_titledb,
+            archive_list,
+            titledb_update,
+            archive_import,
+            archive_import_status,
+            archive_import_cancel,
+            archive_import_dismiss,
+            archive_reveal,
             game_find_cover,
             engine_info,
             engine_check,

@@ -29,6 +29,15 @@ pub struct Config {
     /// Nlib, the game's name to Nintendo's eShop search. Off: none are asked.
     #[serde(default = "yes")]
     pub covers: bool,
+    /// The archive (`archive.rs`): one folder per game with its base game,
+    /// updates and DLC, which builds take as their source.
+    #[serde(default)]
+    pub archive_folder: Option<PathBuf>,
+    /// Download titledb's list of updates and DLC (`titledb.rs`) to say what
+    /// the archive lacks. The whole list comes down: nothing about the games
+    /// is sent.
+    #[serde(default = "yes")]
+    pub titledb: bool,
 }
 
 fn yes() -> bool {
@@ -43,6 +52,8 @@ impl Default for Config {
             italian_prompts: true,
             previous_engine: None,
             covers: true,
+            archive_folder: None,
+            titledb: true,
         }
     }
 }
@@ -106,7 +117,8 @@ mod tests {
     #[test]
     fn an_older_config_gets_the_new_defaults() {
         let c: Config = serde_json::from_str(r#"{"prodKeys": null}"#).unwrap();
-        assert!(c.italian_prompts && c.covers && c.cloud_saves_folder.is_none());
+        assert!(c.italian_prompts && c.covers && c.titledb && c.cloud_saves_folder.is_none());
+        assert!(c.archive_folder.is_none());
     }
 
     #[test]

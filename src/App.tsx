@@ -1,8 +1,9 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLibrary } from "./hooks/useLibrary";
 import { engineRebuildHints, libraryImport } from "./lib/ipc";
+import Archive from "./routes/Archive";
 import Build, { type PendingSource } from "./routes/Build";
 import Cheats from "./routes/Cheats";
 import Doctor from "./routes/Doctor";
@@ -11,7 +12,7 @@ import GameSettingsView from "./routes/GameSettings";
 import Library from "./routes/Library";
 import Preferences from "./routes/Preferences";
 
-type View = "library" | "settings" | "cheats" | "build" | "doctor" | "prefs";
+type View = "library" | "settings" | "cheats" | "archive" | "build" | "doctor" | "prefs";
 
 export default function App() {
   const [view, setView] = useState<View>("library");
@@ -23,6 +24,10 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   /** Games worth rebuilding with the current engine, and why. */
   const [hints, setHints] = useState<Record<string, string[]>>({});
+  /** Files dropped while the archive is open: they are imported into it. */
+  const [archiveDrop, setArchiveDrop] = useState<string[] | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   // Recomputed when the library changes (a build, an engine update emits library-changed).
   useEffect(() => {
@@ -61,8 +66,9 @@ export default function App() {
     if (picked?.length) importPaths(picked);
   };
 
-  // Dropped on the window: built apps (.app) join the library; a game's
-  // folder or a .nup goes to the build view.
+  // Dropped on the window: built apps (.app) join the library; on the
+  // archive page, game files go into the archive; elsewhere a game's folder
+  // or a .nup goes to the build view.
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type === "enter" || payload.type === "over") setDragging(true);
@@ -72,7 +78,9 @@ export default function App() {
         const apps = payload.paths.filter((p) => p.endsWith(".app"));
         const sources = payload.paths.filter((p) => !p.endsWith(".app"));
         if (apps.length) importPaths(apps);
-        if (sources.length) {
+        if (sources.length && viewRef.current === "archive") {
+          setArchiveDrop(sources);
+        } else if (sources.length) {
           setBuildSource({ path: sources[0]! });
           setView("build");
         }
@@ -92,6 +100,9 @@ export default function App() {
         <nav className="flex gap-1 text-sm">
           <Tab active={view === "library" || view === "settings" || view === "cheats"} onClick={() => setView("library")}>
             Libreria{games?.length ? <span className="ml-1.5 text-neutral-400">{games.length}</span> : null}
+          </Tab>
+          <Tab active={view === "archive"} onClick={() => setView("archive")}>
+            Archivio
           </Tab>
           <Tab active={view === "build"} onClick={() => setView("build")}>
             Compila
@@ -113,6 +124,17 @@ export default function App() {
           <Doctor onError={toast} />
         ) : view === "prefs" ? (
           <Preferences gameCount={games?.length ?? 0} onError={toast} />
+        ) : view === "archive" ? (
+          <Archive
+            library={games ?? []}
+            dropped={archiveDrop}
+            onDropTaken={() => setArchiveDrop(null)}
+            onBuild={(path) => {
+              setBuildSource({ path });
+              setView("build");
+            }}
+            onError={toast}
+          />
         ) : view === "cheats" && selected ? (
           <Cheats key={selected.titleId} game={selected} onBack={() => setView("library")} onError={toast} />
         ) : view === "build" ? (
@@ -162,7 +184,7 @@ export default function App() {
       {dragging && (
         <div className="pointer-events-none fixed inset-3 grid place-items-center rounded-2xl border-2 border-dashed border-sky-500 bg-sky-500/10 backdrop-blur-[2px]">
           <p className="rounded-full bg-sky-500 px-4 py-2 text-sm font-medium text-white">
-            Rilascia per aggiungere alla libreria
+            {view === "archive" ? "Rilascia per importare nell'archivio" : "Rilascia per aggiungere alla libreria"}
           </p>
         </div>
       )}

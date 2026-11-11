@@ -134,6 +134,9 @@ pnpm tauri dev
 | `gamelog.rs` | Legge il log del gioco in esecuzione un pezzo al secondo (solo il file di questa sessione: il launcher del gioco rinomina il precedente in `.prev.log`) e ne ricava la fase, la finestra coperta e le shader mancanti; `runner.rs` lo manda alla UI con l'evento `game-status` solo quando cambia. |
 | `engine.rs` | Controlli all'avvio (Python arm64, Xcode 27.2, `xcodegen`, `glslang`, `zstd`, spazio disco), commit fissato, flusso di aggiornamento. |
 | `covers.rs` | Copertine da internet con `/usr/bin/curl`: per i giochi Switch (title ID `01…`) da Nlib per title ID (`api.nlib.cc/nx/<ID>/icon`, dati di blawar/titledb), altrimenti dalla ricerca dell'eShop europeo per nome (`searching.nintendo-europe.com`), presa solo se console e nome coincidono. Salvate in `icons/cover-<ID>.jpg|png`. |
+| `archive.rs` | La cartella archivio: una sottocartella per gioco, `<nome> [<title ID>]`, con gioco base, update e DLC come li vuole lo script (un gioco per cartella; prima NSP/XCI, poi NUP, poi dump). Riconosce i pacchetti dai tag `[title ID][vN]` del nome, i NUP dal loro indice (intestazione e record dei pacchetti, nome dal NACP se c'è), i dump da `main.npdm` e dai nomi delle cartelle `updates/<versione>`, `dlc/<title ID>`. Segnala ciò che una build non prende (più giochi in una cartella, due NUP, file senza tag). |
+| `importer.rs` | Porta i file nell'archivio da cartelle, file e archivi `.zip`, `.rar`, `.7z` (li apre `/usr/bin/tar`, cioè bsdtar). Gli archivi si estraggono in una cartella nascosta dentro l'archivio, così poi i file si spostano invece di copiarsi; sullo stesso volume la copia è un clone APFS, altrimenti passa da un nome `.part` nascosto. I pacchetti senza tag li legge `nx_extract --contents` con prod.keys, e da lì ricevono i tag. Gira su un thread suo, con avanzamento (`archive-import`) e Annulla. Un archivio svuotato senza errori si elimina solo se i file si spostano o se era già nell'archivio. |
+| `titledb.rs` | `versions.txt` di blawar/titledb (circa 3 MB, scaricato intero, al massimo una volta al giorno): l'ultimo update e i DLC di ogni gioco, confrontati in locale con l'archivio. |
 
 **Modello dati, una voce di libreria:**
 ```ts
@@ -197,6 +200,10 @@ Nella scheda **Ambiente**: «Cerca aggiornamenti», le note `Front-ends:`, cosa 
 - Pulsante "Aggiorna nxnative": fetch → mostra le righe `Front-ends:` e il diff di `docs/launcher.schema.json` → conferma → checkout.
 - I giochi la cui ultima build usava un commit diverso ricevono il badge "Ricompila consigliato".
 
+### Fase 6: archivio ✅
+Scheda **Archivio**: la cartella si sceglie lì o in Impostazioni. «Importa file…», «Importa cartella…» o trascinamento sulla scheda; «Sposta i file invece di copiarli»; «Metti in ordine» per i file lasciati sciolti nella cartella archivio. Per ogni gioco: formato, dimensione, gioco base, update presente e ultimo esistente, DLC presenti e mancanti (da titledb), problemi per la build, «Compila» (apre la scheda Compila con la sua cartella) e «Finder». Per gli update e i DLC mancanti il launcher indica solo che cosa manca: si copiano dalla propria console (DBI, nxdumptool) e si importano.
+Per provarla senza giochi: `scripts/make-fake-archive.sh` crea `fixtures/fake-archive/` (da scegliere come archivio) e `fixtures/archive-inbox/` (zip, 7z con un NUP, un dump, un file senza tag) con file segnaposto di pochi byte. Test dal vivo dell'elenco: `cargo test titledb -- --ignored`.
+
 ---
 
 ## 6. Insidie note (dal contratto e dall'ambiente)
@@ -208,7 +215,9 @@ Nella scheda **Ambiente**: «Cerca aggiornamenti», le note `Front-ends:`, cosa 
 5. **I log del gioco in esecuzione non sono un'API:** cambiano formulazione senza avviso. Il launcher ne legge poche righe solo per mostrare cosa sta facendo il gioco (`gamelog.rs`, con il file del motore da cui viene ogni riga), mai per decidere qualcosa. Se una riga cambia, lo stato si limita a mostrare meno: «Avvio» e «Caricamento» passano comunque a «In gioco» dopo 5 minuti e 60 secondi. Dopo un aggiornamento del motore conviene ricontrollare quelle stringhe.
 6. **Cheat:** l'host li legge solo all'avvio o con ⌘R. Si scrivono prima del Play.
 7. **Chiavi e giochi:** il launcher non include, non copia e non invia mai `prod.keys` né file di gioco. Usa solo i percorsi scelti dall'utente.
-8. **Le fonti delle copertine non sono API ufficiali:** Nlib è un servizio della community e la ricerca dell'eShop europeo non è documentata. Se una cambia, il gioco resta senza copertina: niente si rompe, e i test `covers` (incluso quello dal vivo) dicono quale delle due ha smesso di rispondere. Ricevono solo il title ID (Nlib) o il nome del gioco (Nintendo).
+8. **Archivi divisi in più parti** (`.part1.rar`, `.7z.001`, `.r00`): bsdtar non li apre. Il launcher lo dice e chiede di estrarli con Keka o The Unarchiver. Lo stesso per gli archivi con password.
+9. **titledb non è un'API ufficiale e conosce pochi giochi Switch 2:** un gioco che non conosce appare come «titledb non conosce il gioco», mai come completo. Se l'elenco non si scarica, resta quello del giorno prima.
+10. **Le fonti delle copertine non sono API ufficiali:** Nlib è un servizio della community e la ricerca dell'eShop europeo non è documentata. Se una cambia, il gioco resta senza copertina: niente si rompe, e i test `covers` (incluso quello dal vivo) dicono quale delle due ha smesso di rispondere. Ricevono solo il title ID (Nlib) o il nome del gioco (Nintendo).
 
 ---
 
@@ -227,6 +236,7 @@ nxnative/                  ← questa cartella = progetto launcher
    ├─ tauri.conf.json
    └─ src/
       ├─ lib.rs  library.rs  builder.rs  launcher_json.rs
+      ├─ archive.rs  importer.rs  titledb.rs
       └─ prefs.rs  runner.rs  engine.rs
 ```
 
