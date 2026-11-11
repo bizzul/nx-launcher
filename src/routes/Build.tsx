@@ -62,7 +62,15 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
     async (path: string, options: BuildOptions = opts) => {
       setChecking(true);
       try {
-        setPre(await buildPreflight(path, options));
+        let result = await buildPreflight(path, options);
+        // "Solo le shader usate" left on from another game's build, for a
+        // game whose profile has no list: off, so the build can start.
+        if (options.seenShaders && result.source.titleId !== null && result.seenList === null) {
+          const next = { ...options, seenShaders: false };
+          setOpts(next);
+          result = await buildPreflight(path, next);
+        }
+        setPre(result);
       } catch (e) {
         onError(String(e));
       } finally {
@@ -311,7 +319,7 @@ function SeenShadersOption({
             ? `Compila le ${pre.seenList!.toLocaleString("it")} shader viste nei playtest invece di tutte: molto più veloce. Le zone non coperte si vedono senza quelle shader finché non ricompili: «Ricompila» aggiunge quelle che il gioco ha segnalato mancanti.`
             : known
               ? "Il profilo di questo gioco non ha la lista delle shader usate: la build le compila tutte."
-              : "Dal nome dei file non si capisce il gioco. Vale per i giochi il cui profilo ha la lista delle shader usate; per gli altri la build si ferma subito."}
+              : "Non si capisce quale gioco è (i nomi dei file non lo dicono). Vale per i giochi il cui profilo ha la lista delle shader usate; per gli altri la build si ferma subito."}
         </span>
       </span>
     </label>

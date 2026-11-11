@@ -102,8 +102,9 @@ pub struct SourceInfo {
     /// A `*_build` folder from an earlier build is there: a repeat build
     /// reuses it and needs far less time and space.
     pub previous_build: bool,
-    /// The title ID read from the file names, when they carry it (the
-    /// script reads the real one from the game's files).
+    /// The base game's title ID, read as the script reads it: a dump's
+    /// main.npdm, a NUP's table of contents; for NSP/XCI packages (whose
+    /// content metas need prod.keys) the `[title ID]` tags of their names.
     pub title_id: Option<String>,
 }
 
@@ -127,12 +128,14 @@ fn dir_size(dir: &Path) -> u64 {
 /// Recognizes what the player picked, as the script will read it.
 pub fn inspect(path: &Path) -> Result<SourceInfo, String> {
     let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut nup: Option<PathBuf> = None;
     let (kind, files, size_bytes, build_dir) = if path.is_file() {
         if ext_of(path) != "nup" {
             return Err("Scegli una cartella di gioco o un file .nup".into());
         }
         let size = fs::metadata(path).map_or(0, |m| m.len());
         let dir = path.parent().unwrap_or(Path::new("/")).to_path_buf();
+        nup = Some(path.to_path_buf());
         (SourceKind::Nup, vec![file_name(path)], size, dir)
     } else if path.is_dir() {
         let entries: Vec<PathBuf> = fs::read_dir(path)
@@ -148,6 +151,8 @@ pub fn inspect(path: &Path) -> Result<SourceInfo, String> {
         let has_dir = |n: &str| path.join(n).is_dir();
         let size_of = |ps: &[&PathBuf]| ps.iter().map(|p| fs::metadata(p).map_or(0, |m| m.len())).sum();
         if !nups.is_empty() {
+            // The script packs the one NUP of a folder (with two it stops).
+            nup = (nups.len() == 1).then(|| nups[0].clone());
             (SourceKind::Nup, nups.iter().map(|p| file_name(p)).collect(), size_of(&nups), path.into())
         } else if !packages.is_empty() {
             let files = packages.iter().map(|p| file_name(p)).collect();
@@ -171,7 +176,17 @@ pub fn inspect(path: &Path) -> Result<SourceInfo, String> {
         .flatten()
         .any(|e| e.file_name().to_string_lossy().ends_with("_build") && e.path().join("extract").is_dir());
     let own_name = file_name(path);
-    let title_id = guess_title_id(std::iter::once(own_name.as_str()).chain(files.iter().map(String::as_str)));
+    // A dump or a NUP says which game it is; the names only as a fallback.
+    let read = match kind {
+        SourceKind::Dump => crate::archive::read_dump(path).ok().and_then(|cs| cs.first().map(|c| c.app())),
+        SourceKind::Nup => {
+            nup.as_deref().and_then(|p| crate::archive::read_nup(p).ok()).and_then(|i| i.contents.first().map(|c| c.app()))
+        }
+        SourceKind::Nsp => None,
+    };
+    let title_id = read
+        .map(crate::archive::hex)
+        .or_else(|| guess_title_id(std::iter::once(own_name.as_str()).chain(files.iter().map(String::as_str))));
     Ok(SourceInfo {
         path: path.into(),
         title_id,
@@ -242,7 +257,7 @@ pub async fn preflight(engine: &Engine, path: &Path, keys: Option<PathBuf>, opts
         } else if source.title_id.is_some() && seen.is_none() {
             blockers.push("Il profilo di questo gioco non ha la lista delle shader usate: compila tutte le shader".into());
         } else if source.title_id.is_none() {
-            warnings.push("Dal nome dei file non si capisce il gioco: se il suo profilo non ha la lista delle shader usate, la build si ferma subito".into());
+            warnings.push("Non si capisce quale gioco è (i nomi dei file non lo dicono): se il suo profilo non ha la lista delle shader usate, la build si ferma subito".into());
         }
     }
     let keys = keys.filter(|k| k.is_file());
@@ -789,6 +804,39 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_game_from_a_dump_or_a_nup_whatever_their_names() {
+        use crate::archive::tests::{fake_npdm, fake_nup};
+        let t = tempfile::tempdir().unwrap();
+        // Mario Kart World's 1.8.0 dumped, in a folder named by hand.
+        let d = t.path().join("Mario Kart World");
+        fs::create_dir_all(d.join("updates/917504/exefs")).unwrap();
+        fs::create_dir_all(d.join("updates/917504/romfs")).unwrap();
+        fs::write(d.join("updates/917504/exefs/main.npdm"), fake_npdm(0x0400C3F00006E000)).unwrap();
+        let s = inspect(&d).unwrap();
+        assert_eq!((s.kind, s.title_id.as_deref()), (SourceKind::Dump, Some("0400C3F00006E000")));
+        // The same, given as exefs/ and romfs/ directly.
+        assert_eq!(inspect(&d.join("updates/917504")).unwrap().title_id.as_deref(), Some("0400C3F00006E000"));
+        // A NUP named by hand, as a file or in its folder.
+        let n = t.path().join("Zelda");
+        fs::create_dir_all(&n).unwrap();
+        fake_nup(&n.join("zelda.nup"), &[(0, 0x0400486024DEC000, 0), (1, 0x0400486024DEC000, 131072)], None);
+        assert_eq!(inspect(&n.join("zelda.nup")).unwrap().title_id.as_deref(), Some("0400486024DEC000"));
+        assert_eq!(inspect(&n).unwrap().title_id.as_deref(), Some("0400486024DEC000"));
+    }
+
+    /// What the build check sees in a real source, read-only, with the
+    /// installed app's engine: `NXL_SCAN=<folder or .nup> cargo test real_source -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn real_source() {
+        let Some(src) = std::env::var_os("NXL_SCAN") else { return };
+        let s = inspect(Path::new(&src)).unwrap();
+        let data = std::env::var_os("HOME").map(PathBuf::from).unwrap().join("Library/Application Support/dev.nxlauncher.desktop");
+        let seen = s.title_id.as_deref().and_then(|id| seen_list(&crate::engine::Engine::in_data(&data).root, id));
+        println!("{:?} {} {:?} files={:?} seen_list={seen:?}", s.kind, s.name, s.title_id, s.files);
+    }
+
+    #[test]
     fn guesses_the_base_title_id_from_names() {
         let nup = "[site] - The Legend of Zelda Ocarina of Time [0400486024dec000][v131072].nup";
         assert_eq!(guess_title_id([nup]).as_deref(), Some("0400486024DEC000"));
@@ -837,6 +885,8 @@ mod tests {
         assert_eq!((dump.kind, dump.needs_keys, dump.size_bytes), (SourceKind::Dump, false, 50));
         let nup = inspect(&d.join("Kart.nup")).unwrap();
         assert_eq!((nup.kind, nup.name.as_str(), nup.build_dir.as_path()), (SourceKind::Nup, "Kart", d));
+        // Neither name says the game, nor do these stand-ins' files.
+        assert_eq!((nup.title_id.clone(), dump.title_id.clone()), (None, None));
         assert!(inspect(&d.join("Empty")).is_err());
         assert_eq!(needed_bytes(&nsp), 200 + 10 * GIB);
         // A build folder with only its profile left is no head start.
