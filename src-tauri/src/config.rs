@@ -38,6 +38,15 @@ pub struct Config {
     /// is sent.
     #[serde(default = "yes")]
     pub titledb: bool,
+    /// The installed app updates itself from the launcher's GitHub releases
+    /// (`autoupdate.rs`): downloaded, checked against its signature,
+    /// installed, running from the next start.
+    #[serde(default = "yes")]
+    pub app_auto_update: bool,
+    /// The installed app's engine follows nxnative's main on its own,
+    /// except for updates that break something for front ends.
+    #[serde(default = "yes")]
+    pub engine_auto_update: bool,
 }
 
 fn yes() -> bool {
@@ -54,6 +63,8 @@ impl Default for Config {
             covers: true,
             archive_folder: None,
             titledb: true,
+            app_auto_update: true,
+            engine_auto_update: true,
         }
     }
 }
@@ -118,7 +129,7 @@ mod tests {
     fn an_older_config_gets_the_new_defaults() {
         let c: Config = serde_json::from_str(r#"{"prodKeys": null}"#).unwrap();
         assert!(c.italian_prompts && c.covers && c.titledb && c.cloud_saves_folder.is_none());
-        assert!(c.archive_folder.is_none());
+        assert!(c.archive_folder.is_none() && c.app_auto_update && c.engine_auto_update);
     }
 
     #[test]

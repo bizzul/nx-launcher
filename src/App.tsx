@@ -2,7 +2,15 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLibrary } from "./hooks/useLibrary";
-import { engineRebuildHints, libraryImport } from "./lib/ipc";
+import {
+  appInfo,
+  appRestart,
+  engineRebuildHints,
+  engineStatus,
+  libraryImport,
+  onAppUpdateReady,
+  onEngineUpdate,
+} from "./lib/ipc";
 import Archive from "./routes/Archive";
 import Build, { type PendingSource } from "./routes/Build";
 import Cheats from "./routes/Cheats";
@@ -24,6 +32,10 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   /** Games worth rebuilding with the current engine, and why. */
   const [hints, setHints] = useState<Record<string, string[]>>({});
+  /** A launcher version installed over this one, waiting for a restart. */
+  const [updateReady, setUpdateReady] = useState<string | null>(null);
+  /** The installed app's engine is not there yet (Ambiente installs it). */
+  const [engineMissing, setEngineMissing] = useState(false);
   /** Files dropped while the archive is open: they are imported into it. */
   const [archiveDrop, setArchiveDrop] = useState<string[] | null>(null);
   const viewRef = useRef(view);
@@ -39,6 +51,28 @@ export default function App() {
     setToasts((t) => [...t, { id, text }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 7000);
   }, []);
+
+  // Updates found in the background (autoupdate.rs), and an engine to install.
+  useEffect(() => {
+    appInfo().then((i) => setUpdateReady(i.ready), () => {});
+    const unlisten = [
+      onAppUpdateReady(setUpdateReady),
+      onEngineUpdate((u) =>
+        toast(
+          u.applied
+            ? `Motore aggiornato alla versione ${u.short}${u.pip ? ", con le dipendenze Python" : ""}`
+            : `Nuova versione del motore (${u.short}) da applicare in Ambiente: ${u.reason}`,
+        ),
+      ),
+    ];
+    return () => {
+      unlisten.forEach((u) => u.then((off) => off()));
+    };
+  }, [toast]);
+
+  useEffect(() => {
+    engineStatus().then((s) => setEngineMissing(s.managed && !s.installed), () => {});
+  }, [view, games]);
 
   const importPaths = useCallback(
     async (paths: string[]) => {
@@ -96,7 +130,7 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col">
       <header className="flex h-13 shrink-0 items-center gap-6 border-b border-neutral-200 px-5 dark:border-neutral-800">
-        <h1 className="font-semibold tracking-tight">NX Launcher</h1>
+        <h1 className="font-semibold tracking-tight whitespace-nowrap">NX Launcher</h1>
         <nav className="flex gap-1 text-sm">
           <Tab active={view === "library" || view === "settings" || view === "cheats"} onClick={() => setView("library")}>
             Libreria{games?.length ? <span className="ml-1.5 text-neutral-400">{games.length}</span> : null}
@@ -114,9 +148,29 @@ export default function App() {
             Impostazioni
           </Tab>
         </nav>
-        <button onClick={pickApps} className="btn btn-primary ml-auto">
-          Aggiungi gioco
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          {engineMissing && view !== "doctor" && (
+            <button
+              onClick={() => setView("doctor")}
+              className="rounded-full bg-sky-500/15 px-3 py-1 text-xs font-medium whitespace-nowrap text-sky-700 dark:text-sky-300"
+              title="Serve per compilare i giochi: si installa in Ambiente"
+            >
+              Installa il motore
+            </button>
+          )}
+          {updateReady && (
+            <button
+              onClick={() => appRestart().catch((e) => toast(String(e)))}
+              className="rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium whitespace-nowrap text-emerald-700 dark:text-emerald-300"
+              title={`NX Launcher ${updateReady} è installato: riavvia per usarlo`}
+            >
+              {updateReady} pronto · Riavvia
+            </button>
+          )}
+          <button onClick={pickApps} className="btn btn-primary whitespace-nowrap">
+            Aggiungi gioco
+          </button>
+        </div>
       </header>
 
       <main className="flex min-h-0 flex-1">

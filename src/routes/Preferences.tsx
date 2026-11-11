@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import { KeysRow } from "../components/KeysRow";
+import { UpdatesSection } from "../components/UpdatesSection";
 import {
   configGet,
   configSetArchive,
@@ -141,6 +142,8 @@ export default function Preferences({ gameCount, onError }: { gameCount: number;
           </div>
           <Switch on={config.titledb} onToggle={() => apply(() => configSetTitledb(!config.titledb))} />
         </section>
+
+        <UpdatesSection config={config} onConfig={setConfig} onError={onError} />
 
         <KeysRow keys={config.prodKeys} onPick={pickKeys} onClear={() => apply(() => configSetKeys(null))} />
       </div>

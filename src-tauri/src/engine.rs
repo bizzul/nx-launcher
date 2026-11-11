@@ -17,16 +17,27 @@ print(', '.join(miss) or 'ok')";
 /// Homebrew tools the build script calls.
 const BREW_TOOLS: [&str; 3] = ["xcodegen", "glslang", "zstd"];
 
+/// nxnative's own repository, which the managed engine follows.
+pub const UPSTREAM: &str = "https://github.com/seedds/nxnative.git";
+
+/// The engine commit this launcher was built with (the project's submodule,
+/// read by build.rs): a new install starts there, the version the launcher
+/// was tested with.
+pub const PIN: Option<&str> = option_env!("NXL_ENGINE_PIN");
+
 /// Where the nxnative checkout and its Python venv live.
+#[derive(Clone, Debug)]
 pub struct Engine {
     pub root: PathBuf,
     pub python: PathBuf,
+    /// In the launcher's data folder, installed and updated by the launcher
+    /// itself; else the project's submodule, pinned by a commit there.
+    pub managed: bool,
 }
 
 impl Engine {
     /// Development layout: `engine/` (git submodule) and `engine-venv/`
-    /// beside `src-tauri/`. A packaged launcher would keep them in its data
-    /// folder instead; every caller goes through here.
+    /// beside `src-tauri/`, at the path this launcher was compiled from.
     pub fn dev_default() -> Self {
         let project = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -35,7 +46,42 @@ impl Engine {
         Self {
             root: project.join("engine"),
             python: project.join("engine-venv/bin/python"),
+            managed: false,
         }
+    }
+
+    /// In the launcher's data folder: `engine/` and `engine-venv/`, which
+    /// "Installa il motore" makes. The installed app uses these, so it does
+    /// not need the project folder.
+    pub fn in_data(data_dir: &Path) -> Self {
+        Self { root: data_dir.join("engine"), python: data_dir.join("engine-venv/bin/python"), managed: true }
+    }
+
+    /// The engine this launcher uses: the project's while developing (a debug
+    /// build), the data folder's in the installed app. `NXL_ENGINE=data` or
+    /// `NXL_ENGINE=project` picks one, to try the other.
+    pub fn for_app(data_dir: &Path) -> Self {
+        match std::env::var("NXL_ENGINE").as_deref() {
+            Ok("data") => Self::in_data(data_dir),
+            Ok("project") => Self::dev_default(),
+            _ if cfg!(debug_assertions) => Self::dev_default(),
+            _ => Self::in_data(data_dir),
+        }
+    }
+
+    /// The checkout and the venv are there.
+    pub fn installed(&self) -> bool {
+        self.root.join("scripts/build_ipa_from_nsp.py").is_file() && self.python.is_file()
+    }
+
+    /// The venv's folder (`…/engine-venv`).
+    pub fn venv(&self) -> PathBuf {
+        self.python.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default()
+    }
+
+    /// nx_extract, committed in the engine as a native executable.
+    pub fn nx_extract(&self) -> PathBuf {
+        self.root.join("dm/tools/nx_extract_bin/nx_extract")
     }
 
     /// The venv's pip, for the engine's Python requirements.
@@ -131,7 +177,9 @@ pub async fn doctor(engine: &Engine) -> DoctorReport {
         label: "Motore nxnative",
         ok: script_ok,
         detail: if script_ok { commit } else { format!("manca {}", engine.build_script().display()) },
-        fix: (!script_ok).then(|| "git submodule update --init engine".into()),
+        fix: (!script_ok).then(|| {
+            if engine.managed { "Usa «Installa il motore» qui sopra".into() } else { "git submodule update --init engine".into() }
+        }),
     });
 
     // 2. Python from the venv, native arm64 (the script refuses Rosetta).
@@ -148,7 +196,11 @@ pub async fn doctor(engine: &Engine) -> DoctorReport {
         ok: py_ok,
         detail: format!("{} → {arch}", engine.python.display()),
         fix: (!py_ok).then(|| {
-            "python3 -m venv engine-venv && engine-venv/bin/pip install -r engine/.github/requirements/tools.txt".into()
+            if engine.managed {
+                "Usa «Installa il motore» qui sopra".into()
+            } else {
+                "python3 -m venv engine-venv && engine-venv/bin/pip install -r engine/.github/requirements/tools.txt".into()
+            }
         }),
     });
 

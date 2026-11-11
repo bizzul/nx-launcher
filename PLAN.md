@@ -137,6 +137,8 @@ pnpm tauri dev
 | `archive.rs` | La cartella archivio: una sottocartella per gioco, `<nome> [<title ID>]`, con gioco base, update e DLC come li vuole lo script (un gioco per cartella; prima NSP/XCI, poi NUP, poi dump). Riconosce i pacchetti dai tag `[title ID][vN]` del nome, i NUP dal loro indice (intestazione e record dei pacchetti, nome dal NACP se c'è), i dump da `main.npdm` e dai nomi delle cartelle `updates/<versione>`, `dlc/<title ID>`. Segnala ciò che una build non prende (più giochi in una cartella, due NUP, file senza tag). |
 | `importer.rs` | Porta i file nell'archivio da cartelle, file e archivi `.zip`, `.rar`, `.7z` (li apre `/usr/bin/tar`, cioè bsdtar). Gli archivi si estraggono in una cartella nascosta dentro l'archivio, così poi i file si spostano invece di copiarsi; sullo stesso volume la copia è un clone APFS, altrimenti passa da un nome `.part` nascosto. I pacchetti senza tag li legge `nx_extract --contents` con prod.keys, e da lì ricevono i tag. Gira su un thread suo, con avanzamento (`archive-import`) e Annulla. Un archivio svuotato senza errori si elimina solo se i file si spostano o se era già nell'archivio. |
 | `workdir.rs` | La cartella di build di un gioco (`<title ID>_build`, accanto ai file del gioco o, se la sorgente non è nota, accanto all'app): dimensione e quanto libera cancellarla. Se l'app è sullo stesso volume APFS, i suoi file sono cloni di quelli della build, quindi si libera circa la cartella meno l'app. «Libera spazio» la cancella tranne `profile/`, il profilo provvisorio che la build successiva riusa. |
+| `install.rs` | «Installa il motore» per l'app installata: il checkout di nxnative e il suo venv nella cartella dati (`engine/`, `engine-venv/`). Il checkout si copia dal sottomodulo del progetto se c'è (clone locale, oggetti in hard link), altrimenti si scarica da GitHub; parte dal commit con cui il launcher è stato compilato (`NXL_ENGINE_PIN`, scritto da `src-tauri/build.rs`). Il venv si crea con il primo Python 3.12+ arm64 trovato (Homebrew, python.org), poi `pip install` dei requisiti e, prima di Python 3.14, `backports.zstd`. |
+| `autoupdate.rs` | All'avvio (dopo 8 secondi) e una volta al giorno: il launcher si aggiorna dalle release di github.com/bizzul/nx-launcher (plugin updater di Tauri, firma verificata con la chiave pubblica in `tauri.conf.json`, attivo solo nell'app installata o con `NXL_UPDATE_URL`); il motore gestito segue il main di nxnative, salvo note `Front-ends: break` o un altro compilatore Metal, che sono solo annunciati, e mai durante una build o una partita. |
 | `titledb.rs` | `versions.txt` di blawar/titledb (circa 3 MB, scaricato intero, al massimo una volta al giorno): l'ultimo update e i DLC di ogni gioco, confrontati in locale con l'archivio. |
 
 **Modello dati, una voce di libreria:**
@@ -206,6 +208,12 @@ Scheda **Archivio**: la cartella si sceglie lì o in Impostazioni. «Importa fil
 Nella scheda del gioco, **Libera spazio…** cancella la sua cartella di build, con conferma, e dice quanto libera: per Ocarina of Time circa 8 GB su 36, perché il resto lo condivide l'app. Il gioco continua a funzionare; la prossima «Ricompila» riparte da zero. Una cartella di build senza `extract/` non conta più come «build precedente» nel calcolo dello spazio.
 Per provarla senza giochi: `scripts/make-fake-archive.sh` crea `fixtures/fake-archive/` (da scegliere come archivio) e `fixtures/archive-inbox/` (zip, 7z con un NUP, un dump, un file senza tag) con file segnaposto di pochi byte. Test dal vivo dell'elenco: `cargo test titledb -- --ignored`.
 
+### Fase 7: app installabile e aggiornamenti automatici ✅
+- **Dove sta il motore:** la versione di sviluppo (build di debug, `pnpm tauri dev`) usa il sottomodulo del progetto. L'app installata (build di release) usa `~/Library/Application Support/dev.nxlauncher.desktop/engine` e `engine-venv`, che installa da sola dalla scheda Ambiente: non dipende più dalla cartella del progetto. `NXL_ENGINE=data` o `NXL_ENGINE=project` sceglie l'uno o l'altro per provare.
+- **Pubblicare una versione:** `scripts/release.sh 0.3.0 "Cosa cambia" [--install]` imposta la versione, compila e firma l'app con `~/.tauri/nx-launcher.key` (mai nel repository: se la perdi, le app installate non accettano più aggiornamenti e vanno reinstallate a mano), fa il commit «Release v0.3.0», il tag, il push e la release su GitHub con `latest.json`. Con `--install` mette anche l'app in Applicazioni.
+- **Aggiornamenti:** le app installate trovano la versione nuova all'avvio o entro un giorno, la scaricano, verificano la firma e la installano; parte al riavvio («Riavvia» in alto o in Impostazioni). Il motore si aggiorna da solo come descritto in `autoupdate.rs`. Entrambi si spengono in Impostazioni › Aggiornamenti.
+- **Provare un aggiornamento in locale:** compila una versione più alta con `--config '{"bundle":{"createUpdaterArtifacts":true}}'` e `TAURI_SIGNING_PRIVATE_KEY`, servi `latest.json` e il pacchetto con `python3 -m http.server`, e apri una build di debug con `open --env NXL_UPDATE_URL=http://127.0.0.1:8765/latest.json`.
+
 ---
 
 ## 6. Insidie note (dal contratto e dall'ambiente)
@@ -218,8 +226,9 @@ Per provarla senza giochi: `scripts/make-fake-archive.sh` crea `fixtures/fake-ar
 6. **Cheat:** l'host li legge solo all'avvio o con ⌘R. Si scrivono prima del Play.
 7. **Chiavi e giochi:** il launcher non include, non copia e non invia mai `prod.keys` né file di gioco. Usa solo i percorsi scelti dall'utente.
 8. **Archivi divisi in più parti** (`.part1.rar`, `.7z.001`, `.r00`): bsdtar non li apre. Il launcher lo dice e chiede di estrarli con Keka o The Unarchiver. Lo stesso per gli archivi con password.
-9. **titledb non è un'API ufficiale e conosce pochi giochi Switch 2:** un gioco che non conosce appare come «titledb non conosce il gioco», mai come completo. Se l'elenco non si scarica, resta quello del giorno prima.
-10. **Le fonti delle copertine non sono API ufficiali:** Nlib è un servizio della community e la ricerca dell'eShop europeo non è documentata. Se una cambia, il gioco resta senza copertina: niente si rompe, e i test `covers` (incluso quello dal vivo) dicono quale delle due ha smesso di rispondere. Ricevono solo il title ID (Nlib) o il nome del gioco (Nintendo).
+9. **L'app non è firmata da Apple:** la firma è ad-hoc. Installata con `scripts/release.sh --install` o aggiornata da sola non ha la quarantena e si apre normalmente; scaricata dal browser da un altro Mac, macOS la blocca finché non si toglie la quarantena (`xattr -dr com.apple.quarantine "/Applications/NX Launcher.app"`). Per distribuirla ad altri servirebbero un Apple Developer ID e la notarizzazione.
+10. **titledb non è un'API ufficiale e conosce pochi giochi Switch 2:** un gioco che non conosce appare come «titledb non conosce il gioco», mai come completo. Se l'elenco non si scarica, resta quello del giorno prima.
+11. **Le fonti delle copertine non sono API ufficiali:** Nlib è un servizio della community e la ricerca dell'eShop europeo non è documentata. Se una cambia, il gioco resta senza copertina: niente si rompe, e i test `covers` (incluso quello dal vivo) dicono quale delle due ha smesso di rispondere. Ricevono solo il title ID (Nlib) o il nome del gioco (Nintendo).
 
 ---
 
@@ -238,7 +247,8 @@ nxnative/                  ← questa cartella = progetto launcher
    ├─ tauri.conf.json
    └─ src/
       ├─ lib.rs  library.rs  builder.rs  launcher_json.rs
-      ├─ archive.rs  importer.rs  titledb.rs
+      ├─ archive.rs  importer.rs  titledb.rs  workdir.rs
+      ├─ install.rs  autoupdate.rs
       └─ prefs.rs  runner.rs  engine.rs
 ```
 

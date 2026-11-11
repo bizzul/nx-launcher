@@ -20,6 +20,55 @@ export type DoctorReport = {
 
 export const doctor = () => invoke<DoctorReport>("doctor");
 
+// ── The engine's install and the updates (install.rs, autoupdate.rs) ────────
+
+export type EngineStatus = {
+  installed: boolean;
+  /** In the launcher's data folder, installed and updated by the launcher; else the project's. */
+  managed: boolean;
+  root: string;
+};
+
+export type InstallSnapshot = {
+  running: boolean;
+  step: string;
+  /** 0–1, or null when the work cannot be counted. */
+  frac: number | null;
+  log: string[];
+  error: string | null;
+  finishedAt: number | null;
+};
+
+export const engineStatus = () => invoke<EngineStatus>("engine_status");
+export const engineInstall = () => invoke<InstallSnapshot>("engine_install");
+export const engineInstallStatus = () => invoke<InstallSnapshot | null>("engine_install_status");
+export const onEngineInstall = (cb: (snap: InstallSnapshot) => void) =>
+  listen<InstallSnapshot>("engine-install", (e) => cb(e.payload));
+
+export type AppInfo = {
+  version: string;
+  /** The installed app: it updates itself. */
+  automatic: boolean;
+  /** A newer version installed over this one, waiting for a restart. */
+  ready: string | null;
+};
+export type AppUpdate = { version: string; notes: string | null; date: string | null };
+/** What the engine's automatic update did (applied, or only announced with the reason). */
+export type EngineUpdate = { applied: boolean; short: string; reason: string | null; pip: boolean };
+
+export const appInfo = () => invoke<AppInfo>("app_info");
+export const appUpdateCheck = () => invoke<AppUpdate | null>("app_update_check");
+/** Downloads, verifies and installs the newer version; resolves to it (null: none). */
+export const appUpdateInstall = () => invoke<string | null>("app_update_install");
+/** Restarts into the installed version; rejects while a build, import or install runs. */
+export const appRestart = () => invoke<void>("app_restart");
+export const onAppUpdateReady = (cb: (version: string) => void) =>
+  listen<string>("app-update-ready", (e) => cb(e.payload));
+export const onAppUpdateProgress = (cb: (done: number, total: number | null) => void) =>
+  listen<[number, number | null]>("app-update-progress", (e) => cb(e.payload[0], e.payload[1]));
+export const onEngineUpdate = (cb: (u: EngineUpdate) => void) =>
+  listen<EngineUpdate>("engine-update", (e) => cb(e.payload));
+
 // ── Library ──────────────────────────────────────────────────────────────────
 
 export type ExitKind =
@@ -185,6 +234,10 @@ export type Config = {
   archiveFolder: string | null;
   /** Download titledb's list to say which updates and DLC the archive lacks. */
   titledb: boolean;
+  /** The installed app updates itself from the launcher's GitHub releases. */
+  appAutoUpdate: boolean;
+  /** The installed app's engine follows nxnative's main (not updates that break the launcher). */
+  engineAutoUpdate: boolean;
 };
 export const configGet = () => invoke<Config>("config_get");
 export const configSetCovers = (on: boolean) => invoke<Config>("config_set_covers", { on });
@@ -198,6 +251,8 @@ export const configSetItalianPrompts = (on: boolean) =>
 /** The archive's folder; null forgets it (its files stay). */
 export const configSetArchive = (path: string | null) => invoke<Config>("config_set_archive", { path });
 export const configSetTitledb = (on: boolean) => invoke<Config>("config_set_titledb", { on });
+export const configSetAutoUpdate = (appOn: boolean, engineOn: boolean) =>
+  invoke<Config>("config_set_auto_update", { appOn, engineOn });
 
 // ── The archive (archive.rs, importer.rs, titledb.rs) ───────────────────────
 

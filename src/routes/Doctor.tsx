@@ -1,14 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EngineCard } from "../components/EngineCard";
-import { doctor, type DoctorReport } from "../lib/ipc";
+import { EngineInstall } from "../components/EngineInstall";
+import { doctor, engineStatus, type DoctorReport, type EngineStatus } from "../lib/ipc";
 
 /** The engine's version, and whether this Mac can build and run its games. */
 export default function Doctor({ onError }: { onError: (m: string) => void }) {
   const [report, setReport] = useState<DoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [status, setStatus] = useState<EngineStatus | null>(null);
 
   async function runDoctor() {
+    engineStatus().then(setStatus, () => {});
     setRunning(true);
     setError(null);
     try {
@@ -24,13 +27,21 @@ export default function Doctor({ onError }: { onError: (m: string) => void }) {
     runDoctor();
   }, []);
 
+  const installed = useCallback(() => {
+    runDoctor();
+  }, []);
+
   const failed = report?.checks.filter((c) => !c.ok).length ?? 0;
 
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-8">
         {/* A new engine can require another Metal compiler: check again after a change. */}
-        <EngineCard onError={onError} onChanged={runDoctor} />
+        {status && status.managed && !status.installed ? (
+          <EngineInstall root={status.root} onInstalled={installed} onError={onError} />
+        ) : status ? (
+          <EngineCard onError={onError} onChanged={runDoctor} />
+        ) : null}
         <div className="mb-6 flex items-end justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Ambiente</h2>

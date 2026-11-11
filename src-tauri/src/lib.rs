@@ -1,4 +1,5 @@
 mod archive;
+mod autoupdate;
 mod build;
 mod cheats;
 mod config;
@@ -6,6 +7,7 @@ mod covers;
 mod engine;
 mod gamelog;
 mod importer;
+mod install;
 mod library;
 mod prefs;
 mod runner;
@@ -24,6 +26,9 @@ use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 pub struct AppState {
+    /// The nxnative engine: the project's while developing, the data
+    /// folder's in the installed app (engine.rs, `Engine::for_app`).
+    engine: engine::Engine,
     library: Mutex<Library>,
     /// Games this launcher started, by title ID.
     running: Mutex<HashMap<String, runner::Session>>,
@@ -34,6 +39,10 @@ pub struct AppState {
     import: Mutex<Option<importer::ImportRun>>,
     /// titledb's list as last read, kept while its file is the same.
     titledb: Mutex<Option<Arc<titledb::Titledb>>>,
+    /// The engine's install in progress, or the last one.
+    install: Mutex<Option<install::Snapshot>>,
+    /// A launcher version installed over this one, running from the next start.
+    app_update_ready: Mutex<Option<String>>,
 }
 
 /// A library entry as the UI sees it.
@@ -107,8 +116,8 @@ struct ImportReport {
 
 /// Checks that this Mac has everything nxnative needs to build and run games.
 #[tauri::command]
-async fn doctor() -> engine::DoctorReport {
-    engine::doctor(&engine::Engine::dev_default()).await
+async fn doctor(state: State<'_, AppState>) -> Result<engine::DoctorReport, String> {
+    Ok(engine::doctor(&state.engine).await)
 }
 
 #[tauri::command]
@@ -405,7 +414,7 @@ fn archive_import(
         root,
         moving,
         keys: keys.filter(|k| k.is_file()),
-        nx_extract: engine::Engine::dev_default().root.join("dm/tools/nx_extract_bin/nx_extract"),
+        nx_extract: state.engine.nx_extract(),
         names,
     };
     importer::start(&app, req)
@@ -566,6 +575,87 @@ async fn game_find_cover(state: State<'_, AppState>, title_id: String) -> Result
     Ok(state.view(&state.game(&title_id)?))
 }
 
+// ── Updates (autoupdate.rs) ─────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppInfo {
+    version: String,
+    /// The installed app (a release build): it updates itself.
+    automatic: bool,
+    /// A newer version installed over this one, waiting for a restart.
+    ready: Option<String>,
+}
+
+#[tauri::command]
+fn app_info(app: AppHandle, state: State<AppState>) -> AppInfo {
+    AppInfo {
+        version: app.package_info().version.to_string(),
+        automatic: autoupdate::automatic(),
+        ready: state.app_update_ready.lock().unwrap().clone(),
+    }
+}
+
+#[tauri::command]
+async fn app_update_check(app: AppHandle) -> Result<Option<autoupdate::AppUpdate>, String> {
+    autoupdate::check(&app).await
+}
+
+/// Downloads, verifies and installs the newer launcher; it runs from the next start.
+#[tauri::command]
+async fn app_update_install(app: AppHandle) -> Result<Option<String>, String> {
+    autoupdate::install(&app).await
+}
+
+/// Restarts into the version just installed, unless that would cut work short.
+#[tauri::command]
+fn app_restart(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    if let Some(why) = autoupdate::busy(&state) {
+        return Err(format!("Riavvio rimandato: {why}"));
+    }
+    app.restart()
+}
+
+#[tauri::command]
+fn config_set_auto_update(state: State<AppState>, app_on: bool, engine_on: bool) -> Result<config::Config, String> {
+    let mut store = state.config.lock().unwrap();
+    store.config.app_auto_update = app_on;
+    store.config.engine_auto_update = engine_on;
+    store.save().map_err(|e| e.to_string())?;
+    Ok(store.config.clone())
+}
+
+// ── The engine's install (install.rs) ───────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineStatus {
+    /// The checkout and its venv are there.
+    installed: bool,
+    /// In the launcher's data folder, installed and updated by the launcher;
+    /// else the project's submodule.
+    managed: bool,
+    root: PathBuf,
+}
+
+#[tauri::command]
+fn engine_status(state: State<AppState>) -> EngineStatus {
+    let e = &state.engine;
+    EngineStatus { installed: e.installed(), managed: e.managed, root: e.root.clone() }
+}
+
+/// "Installa il motore": the checkout and its venv in the data folder, in
+/// the background (`engine-install` events).
+#[tauri::command]
+fn engine_install(app: AppHandle) -> Result<install::Snapshot, String> {
+    install::start(&app)
+}
+
+#[tauri::command]
+fn engine_install_status(state: State<AppState>) -> Option<install::Snapshot> {
+    state.install.lock().unwrap().clone()
+}
+
 // ── The engine's version (docs/frontends.md, "Following main") ──────────────
 
 #[derive(Serialize)]
@@ -579,15 +669,15 @@ struct EngineState {
 
 #[tauri::command]
 async fn engine_info(state: State<'_, AppState>) -> Result<EngineState, String> {
-    let info = updater::info(&engine::Engine::dev_default()).await?;
+    let info = updater::info(&state.engine).await?;
     let previous = state.config.lock().unwrap().config.previous_engine.clone();
     Ok(EngineState { info, previous })
 }
 
 /// Fetches main and says what moving to it would change for the launcher.
 #[tauri::command]
-async fn engine_check() -> Result<updater::UpdateInfo, String> {
-    updater::check(&engine::Engine::dev_default()).await
+async fn engine_check(state: State<'_, AppState>) -> Result<updater::UpdateInfo, String> {
+    updater::check(&state.engine).await
 }
 
 /// Moves the engine to main's commit as last fetched (`latest`), or back to
@@ -606,7 +696,7 @@ async fn engine_apply(app: AppHandle, state: State<'_, AppState>, rollback: bool
     } else {
         "origin/main".to_string()
     };
-    let applied = updater::apply(&engine::Engine::dev_default(), &target).await?;
+    let applied = updater::apply(&state.engine, &target).await?;
     {
         let mut store = state.config.lock().unwrap();
         store.config.previous_engine = Some(applied.previous.clone());
@@ -621,7 +711,7 @@ async fn engine_apply(app: AppHandle, state: State<'_, AppState>, rollback: bool
 #[tauri::command]
 async fn engine_rebuild_hints(state: State<'_, AppState>) -> Result<HashMap<String, Vec<String>>, String> {
     let games = state.library.lock().unwrap().games().to_vec();
-    Ok(updater::rebuild_hints(&engine::Engine::dev_default(), &games).await)
+    Ok(updater::rebuild_hints(&state.engine, &games).await)
 }
 
 // ── Cheats ──────────────────────────────────────────────────────────────────
@@ -677,7 +767,7 @@ async fn build_preflight(
     options: Option<build::Options>,
 ) -> Result<build::Preflight, String> {
     let keys = state.config.lock().unwrap().config.prod_keys.clone();
-    build::preflight(&engine::Engine::dev_default(), &path, keys, options.unwrap_or_default()).await
+    build::preflight(&state.engine, &path, keys, options.unwrap_or_default()).await
 }
 
 #[tauri::command]
@@ -688,7 +778,7 @@ async fn build_start(
     options: Option<build::Options>,
 ) -> Result<build::Snapshot, String> {
     let keys = state.config.lock().unwrap().config.prod_keys.clone();
-    build::start(&app, &engine::Engine::dev_default(), &path, keys, options.unwrap_or_default()).await
+    build::start(&app, &state.engine, &path, keys, options.unwrap_or_default()).await
 }
 
 /// Shows what the last build wrote (the IPA, or the Mac app) in Finder.
@@ -775,17 +865,22 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // ~/Library/Application Support/<identifier>/: library.json, config.json, icons/
             let data_dir = app.path().app_data_dir()?;
             app.manage(AppState {
+                engine: engine::Engine::for_app(&data_dir),
                 library: Mutex::new(Library::load(&data_dir)?),
                 running: Mutex::new(HashMap::new()),
                 config: Mutex::new(ConfigStore::load(&data_dir)),
                 build: Mutex::new(None),
                 import: Mutex::new(None),
                 titledb: Mutex::new(None),
+                install: Mutex::new(None),
+                app_update_ready: Mutex::new(None),
             });
+            autoupdate::schedule(app.handle());
             fetch_covers(app.handle(), None);
             Ok(())
         })
@@ -824,6 +919,14 @@ pub fn run() {
             game_find_cover,
             game_build_folder,
             game_free_build_folder,
+            app_info,
+            app_update_check,
+            app_update_install,
+            app_restart,
+            config_set_auto_update,
+            engine_status,
+            engine_install,
+            engine_install_status,
             engine_info,
             engine_check,
             engine_apply,
