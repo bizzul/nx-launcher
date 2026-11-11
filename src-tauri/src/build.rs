@@ -163,11 +163,13 @@ pub fn inspect(path: &Path) -> Result<SourceInfo, String> {
     } else {
         return Err(format!("{} non esiste", path.display()));
     };
+    // A build folder counts only with the extracted game in it: one freed by
+    // "Libera spazio" keeps just the profile, and the next build is a first one.
     let previous_build = fs::read_dir(&build_dir)
         .into_iter()
         .flatten()
         .flatten()
-        .any(|e| e.file_name().to_string_lossy().ends_with("_build") && e.path().is_dir());
+        .any(|e| e.file_name().to_string_lossy().ends_with("_build") && e.path().join("extract").is_dir());
     let own_name = file_name(path);
     let title_id = guess_title_id(std::iter::once(own_name.as_str()).chain(files.iter().map(String::as_str)));
     Ok(SourceInfo {
@@ -837,5 +839,10 @@ mod tests {
         assert_eq!((nup.kind, nup.name.as_str(), nup.build_dir.as_path()), (SourceKind::Nup, "Kart", d));
         assert!(inspect(&d.join("Empty")).is_err());
         assert_eq!(needed_bytes(&nsp), 200 + 10 * GIB);
+        // A build folder with only its profile left is no head start.
+        fs::create_dir_all(d.join("Nsp/0100_build/profile")).unwrap();
+        assert!(!inspect(&d.join("Nsp")).unwrap().previous_build);
+        fs::create_dir_all(d.join("Nsp/0100_build/extract")).unwrap();
+        assert!(inspect(&d.join("Nsp")).unwrap().previous_build);
     }
 }

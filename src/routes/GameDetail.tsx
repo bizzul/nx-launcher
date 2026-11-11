@@ -1,13 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { GameIcon } from "../components/GameIcon";
 import { useNow } from "../hooks/useLibrary";
-import { exitMessage, formatClock, formatDuration, formatWhen, type Tone } from "../lib/format";
+import { exitMessage, formatBytes, formatClock, formatDuration, formatWhen, type Tone } from "../lib/format";
 import {
+  gameBuildFolder,
   gameFindCover,
+  gameFreeBuildFolder,
   gameLaunch,
   gameReveal,
   gameStop,
   libraryRemove,
+  type BuildFolder,
   type Game,
   type GameStatus,
 } from "../lib/ipc";
@@ -47,8 +50,24 @@ export default function GameDetail({
   onRemoved,
   onError,
 }: Props) {
-  const [confirm, setConfirm] = useState<"stop" | "remove" | null>(null);
+  const [confirm, setConfirm] = useState<"stop" | "remove" | "free" | null>(null);
   const [findingCover, setFindingCover] = useState(false);
+  /** undefined: still measuring; null: no build folder. */
+  const [buildFolder, setBuildFolder] = useState<BuildFolder | null | undefined>(undefined);
+  const [freeing, setFreeing] = useState(false);
+  const [freed, setFreed] = useState<number | null>(null);
+
+  // Measured in the background: a big build folder takes a moment to count.
+  useEffect(() => {
+    let live = true;
+    gameBuildFolder(game.titleId).then(
+      (f) => live && setBuildFolder(f),
+      () => live && setBuildFolder(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [game.titleId, game.appPath]);
   const running = game.runningSince !== null;
   /** Starting or preparing: its clock ticks every second. */
   const busy = running && !!game.status && game.status.phase !== "playing";
@@ -66,6 +85,19 @@ export default function GameDetail({
 
   const play = (settingsWindow: boolean) =>
     act(async () => onChanged(await gameLaunch(game.titleId, settingsWindow)));
+
+  const freeBuild = async () => {
+    setFreeing(true);
+    try {
+      setFreed(await gameFreeBuildFolder(game.titleId));
+      setConfirm(null);
+      setBuildFolder(await gameBuildFolder(game.titleId));
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setFreeing(false);
+    }
+  };
 
   const findCover = act(async () => {
     setFindingCover(true);
@@ -187,6 +219,46 @@ export default function GameDetail({
           <LinkButton onClick={act(() => gameReveal(game.titleId, "log"))}>Apri il log</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "saves"))}>Apri i salvataggi</LinkButton>
         </div>
+
+        {buildFolder && buildFolder.freesBytes > 0 && (
+          <div className="mt-4 border-t border-neutral-200 pt-4 text-sm dark:border-neutral-800">
+            {confirm === "free" ? (
+              <div className="rounded-lg bg-neutral-100 p-3 text-xs leading-relaxed dark:bg-neutral-900">
+                <p>
+                  Cancellare la cartella di build? Il gioco continua a funzionare: l'app ha già tutto quello che le serve.
+                </p>
+                <p className="mt-2 text-neutral-600 dark:text-neutral-400">
+                  Libera circa <b>{formatBytes(buildFolder.freesBytes)}</b>
+                  {buildFolder.shared &&
+                    ` dei ${formatBytes(buildFolder.sizeBytes)}: il resto lo condivide l'app e resta occupato finché c'è lei`}
+                  . La prossima «Ricompila» riparte da zero (30–60 minuti). Non si può annullare.
+                </p>
+                <div className="mt-3 flex gap-2">
+                  <button onClick={freeBuild} disabled={freeing} className="btn btn-danger flex-1">
+                    {freeing ? "Cancello…" : "Cancella"}
+                  </button>
+                  <button onClick={() => setConfirm(null)} disabled={freeing} className="btn flex-1">
+                    Annulla
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <LinkButton onClick={() => setConfirm("free")}>
+                  Libera spazio… <span className="text-neutral-500">circa {formatBytes(buildFolder.freesBytes)}</span>
+                </LinkButton>
+                <p className="mt-0.5 text-xs text-neutral-500">
+                  Cartella di build: {formatBytes(buildFolder.sizeBytes)}, serve solo a ricompilare più in fretta
+                </p>
+              </>
+            )}
+          </div>
+        )}
+        {freed !== null && !buildFolder?.freesBytes && (
+          <p className="mt-4 text-xs text-emerald-600 dark:text-emerald-400">
+            ✓ Cartella di build cancellata: liberati circa {formatBytes(freed)}
+          </p>
+        )}
       </div>
 
       <div className="mt-auto border-t border-neutral-200 p-6 pt-4 dark:border-neutral-800">

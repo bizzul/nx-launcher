@@ -12,6 +12,7 @@ mod runner;
 mod settings;
 mod titledb;
 mod updater;
+mod workdir;
 
 use config::ConfigStore;
 use library::{Game, Library};
@@ -445,6 +446,38 @@ fn archive_reveal(app: AppHandle, state: State<AppState>, title_id: Option<Strin
     app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
 }
 
+// ── A game's build folder (workdir.rs) ──────────────────────────────────────
+
+/// The game's build folder, its size and about what deleting it frees;
+/// `None` when it has none (deleted, or built elsewhere).
+#[tauri::command]
+async fn game_build_folder(state: State<'_, AppState>, title_id: String) -> Result<Option<workdir::BuildFolder>, String> {
+    let game = state.game(&title_id)?;
+    tauri::async_runtime::spawn_blocking(move || workdir::info(&game)).await.map_err(|e| e.to_string())
+}
+
+/// "Libera spazio": deletes the game's build folder (its provisional profile
+/// stays). The path is found here from the game, not taken from the web
+/// view. Returns about what it freed.
+#[tauri::command]
+async fn game_free_build_folder(state: State<'_, AppState>, title_id: String) -> Result<u64, String> {
+    let game = state.game(&title_id)?;
+    let info = tauri::async_runtime::spawn_blocking(move || workdir::info(&game))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Questo gioco non ha una cartella di build")?;
+    {
+        let slot = state.build.lock().unwrap();
+        let busy = slot.as_ref().filter(|r| r.running()).is_some_and(|r| info.path.parent() == Some(&r.snap.source.build_dir));
+        if busy {
+            return Err("Una build sta usando questa cartella: aspetta che finisca".into());
+        }
+    }
+    let path = info.path.clone();
+    tauri::async_runtime::spawn_blocking(move || workdir::free(&path)).await.map_err(|e| e.to_string())??;
+    Ok(info.frees_bytes)
+}
+
 // ── Covers (covers.rs) ──────────────────────────────────────────────────────
 
 /// A game no source knew is asked again after a week (a new game reaches
@@ -789,6 +822,8 @@ pub fn run() {
             archive_import_dismiss,
             archive_reveal,
             game_find_cover,
+            game_build_folder,
+            game_free_build_folder,
             engine_info,
             engine_check,
             engine_apply,

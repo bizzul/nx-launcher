@@ -108,6 +108,21 @@ export const gameReveal = (titleId: string, target: RevealTarget) =>
 /** Asks the cover sources now; rejects with a message when none has the game. */
 export const gameFindCover = (titleId: string) => invoke<Game>("game_find_cover", { titleId });
 
+/** A game's build folder (<title ID>_build): the script's cache, which the app does not need. */
+export type BuildFolder = {
+  path: string;
+  sizeBytes: number;
+  /** About what deleting it gives back: on the app's APFS volume the app shares the rest. */
+  freesBytes: number;
+  /** The app's files are clones of the build's (same APFS volume). */
+  shared: boolean;
+};
+
+/** null: the game has no build folder (freed, or built elsewhere). */
+export const gameBuildFolder = (titleId: string) => invoke<BuildFolder | null>("game_build_folder", { titleId });
+/** Deletes the game's build folder (its provisional profile stays); resolves to about the bytes freed. */
+export const gameFreeBuildFolder = (titleId: string) => invoke<number>("game_free_build_folder", { titleId });
+
 /** Emitted by Rust when a game this launcher started exits. */
 export const onGameExited = (cb: (game: Game) => void) =>
   listen<Game>("game-exited", (e) => cb(e.payload));
