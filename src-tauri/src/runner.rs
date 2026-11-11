@@ -25,7 +25,12 @@ pub struct Session {
 /// Starts the app's own launcher, `Contents/MacOS/nxnative`, as our child, so
 /// its exit code tells how the game ended. Without `settings_window` it starts
 /// with `DM_LAUNCHER=0`: no settings window, the saved choices still apply.
-pub async fn launch(app: &AppHandle, game: &Game, settings_window: bool) -> Result<u64, String> {
+pub async fn launch(
+    app: &AppHandle,
+    game: &Game,
+    settings_window: bool,
+    overrides: &[(String, String)],
+) -> Result<u64, String> {
     let exe = game.app_path.join("Contents/MacOS").join(EXECUTABLE);
     if !exe.is_file() {
         return Err(format!(
@@ -45,6 +50,8 @@ pub async fn launch(app: &AppHandle, game: &Game, settings_window: bool) -> Resu
     if !settings_window {
         cmd.env("DM_LAUNCHER", "0");
     }
+    // Already checked against the game's settings list (settings::check_overrides).
+    cmd.envs(overrides.iter().map(|(k, v)| (k, v)));
     let mut child = cmd.spawn().map_err(|e| format!("Impossibile avviare {}: {e}", game.name))?;
     let pid = child.id().ok_or("Il gioco si è chiuso subito")?;
 

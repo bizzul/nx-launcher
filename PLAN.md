@@ -153,14 +153,14 @@ type Game = {
 Sezione 3 completa. Traguardo: `pnpm tauri dev` apre una finestra vuota e il motore compila un gioco **da terminale**.
 
 ### Fase 1: libreria e avvio (MVP) ✅
-Per provarla senza un gioco vero: `scripts/make-fake-game.sh fixtures/fake-games <title ID> "<nome>" [codice di uscita] [secondi]` crea un'app finta con la stessa struttura di quelle di nxnative.
+Per provarla senza un gioco vero: `scripts/make-fake-library.sh` crea in `fixtures/fake-games/` tre app finte con la stessa struttura di quelle di nxnative, con le liste di impostazioni reali scritte da `settings.py` del motore. Una sola: `scripts/make-fake-game.sh`.
 
 - Import di una `.app` già costruita (drag & drop o pulsante) → lettura di `Info.plist` → griglia con icona e nome.
 - **Play** → spawn di `Contents/MacOS/nxnative`, badge "In gioco", exit code tradotto (`70` → "macOS ha revocato la GPU", `134` → "crash, apri il log").
 - "Mostra log", "Mostra salvataggi", "Mostra nel Finder".
 - **Traguardo:** si avvia dal launcher un gioco costruito da CLI.
 
-### Fase 2: impostazioni per gioco
+### Fase 2: impostazioni per gioco ✅
 - Lettura di `launcher.json` → form dinamico: `choice` → select, `range` → slider (con `base` mostra la risoluzione, es. 0.75 → 1200×675), `toggle` → switch.
 - Prima le righe `level: "basic"`, le altre sotto "Avanzate". Le righe con `needs` si vedono solo quando la loro condizione è vera.
 - Salvataggio solo dei valori diversi dal default; pulsante "Ripristina default testati".

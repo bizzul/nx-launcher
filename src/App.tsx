@@ -5,9 +5,10 @@ import { useLibrary } from "./hooks/useLibrary";
 import { libraryImport } from "./lib/ipc";
 import Doctor from "./routes/Doctor";
 import GameDetail from "./routes/GameDetail";
+import GameSettingsView from "./routes/GameSettings";
 import Library from "./routes/Library";
 
-type View = "library" | "doctor";
+type View = "library" | "settings" | "doctor";
 
 export default function App() {
   const [view, setView] = useState<View>("library");
@@ -69,7 +70,7 @@ export default function App() {
       <header className="flex h-13 shrink-0 items-center gap-6 border-b border-neutral-200 px-5 dark:border-neutral-800">
         <h1 className="font-semibold tracking-tight">NX Launcher</h1>
         <nav className="flex gap-1 text-sm">
-          <Tab active={view === "library"} onClick={() => setView("library")}>
+          <Tab active={view !== "doctor"} onClick={() => setView("library")}>
             Libreria{games?.length ? <span className="ml-1.5 text-neutral-400">{games.length}</span> : null}
           </Tab>
           <Tab active={view === "doctor"} onClick={() => setView("doctor")}>
@@ -84,6 +85,14 @@ export default function App() {
       <main className="flex min-h-0 flex-1">
         {view === "doctor" ? (
           <Doctor />
+        ) : view === "settings" && selected ? (
+          <GameSettingsView
+            key={selected.titleId}
+            game={selected}
+            onBack={() => setView("library")}
+            onLaunched={update}
+            onError={toast}
+          />
         ) : games === null ? null : (
           <>
             <Library games={games} selectedId={selectedId} onSelect={setSelectedId} onAdd={pickApps} />
@@ -91,6 +100,7 @@ export default function App() {
               <GameDetail
                 key={selected.titleId}
                 game={selected}
+                onOpenSettings={() => setView("settings")}
                 onChanged={update}
                 onRemoved={() => {
                   setSelectedId(null);

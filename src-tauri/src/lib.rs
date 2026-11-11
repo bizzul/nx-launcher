@@ -1,10 +1,12 @@
 mod engine;
 mod library;
+mod prefs;
 mod runner;
+mod settings;
 
 use library::{Game, Library};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
@@ -95,16 +97,41 @@ fn library_remove(state: State<AppState>, title_id: String) -> Result<(), String
     lib.save().map_err(|e| e.to_string())
 }
 
+/// Starts a game. `overrides` hold settings for this start only: they go in
+/// the launch environment, which wins over everything, and are not saved.
 #[tauri::command]
 async fn game_launch(
     app: AppHandle,
     state: State<'_, AppState>,
     title_id: String,
     settings_window: bool,
+    overrides: Option<BTreeMap<String, String>>,
 ) -> Result<GameView, String> {
     let game = state.game(&title_id)?;
-    runner::launch(&app, &game, settings_window).await?;
+    let env = settings::check_overrides(&game, &overrides.unwrap_or_default())?;
+    runner::launch(&app, &game, settings_window, &env).await?;
     Ok(state.view(&game))
+}
+
+fn home(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().home_dir().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn settings_get(app: AppHandle, state: State<AppState>, title_id: String) -> Result<settings::GameSettings, String> {
+    settings::load(&state.game(&title_id)?, &home(&app)?)
+}
+
+/// Saves the player's choices in the game's preferences, where its own
+/// settings window and a start from Finder read them too.
+#[tauri::command]
+fn settings_save(
+    app: AppHandle,
+    state: State<AppState>,
+    title_id: String,
+    choices: BTreeMap<String, String>,
+) -> Result<settings::GameSettings, String> {
+    settings::save(&state.game(&title_id)?, &home(&app)?, &choices)
 }
 
 #[tauri::command]
@@ -145,6 +172,8 @@ pub fn run() {
             game_launch,
             game_stop,
             game_reveal,
+            settings_get,
+            settings_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
