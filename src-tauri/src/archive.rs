@@ -184,12 +184,18 @@ const NUP_SUPER: usize = 0x80;
 const NUP_TOC: usize = 0x30;
 const NUP_PKG: usize = 0x40;
 const NUP_NACP: u16 = 2;
+/// Package flags bit 0: an update in a container without a base game.
+const NUP_STANDALONE: u8 = 1;
 
 #[derive(Debug)]
 pub struct NupInfo {
     pub contents: Vec<Content>,
     /// The game's name from the NACP a package carries (most do not).
     pub name: Option<String>,
+    /// No base game, and an update the build takes as the whole game: a base
+    /// record with no files, or every update marked `standalone_update`
+    /// (scripts/pack_nup.py, `scan`).
+    pub whole_update: bool,
 }
 
 /// What a NUP holds, from its table of contents: the base game, its updates
@@ -224,9 +230,19 @@ pub fn read_nup(path: &Path) -> Result<NupInfo, String> {
 
     let mut contents = Vec::new();
     let mut metas = Vec::new();
+    let (mut base, mut empty_base, mut updates, mut standalone) = (false, false, 0, 0);
     for i in 0..npkg as usize {
         let r = &toc[NUP_TOC + i * NUP_PKG..][..NUP_PKG];
         let (tid, version, kind) = (u64_at(r, 0), u32_at(r, 20), r[24]);
+        match kind {
+            0 if tid == 0 => empty_base = true,
+            0 => base = true,
+            1 => {
+                updates += 1;
+                standalone += usize::from(r[25] & NUP_STANDALONE != 0);
+            }
+            _ => {}
+        }
         let (meta_off, meta_size) = (u64_at(r, 32), u32_at(r, 40) as u64);
         match kind {
             // A base record with title ID 0 has no files: the update is the whole game.
@@ -249,7 +265,8 @@ pub fn read_nup(path: &Path) -> Result<NupInfo, String> {
         f.seek(SeekFrom::Start(off)).and_then(|_| f.read_exact(&mut block)).ok()?;
         nacp_name(tlv(&block, NUP_NACP)?)
     });
-    Ok(NupInfo { contents, name })
+    let whole_update = !base && updates > 0 && (empty_base || standalone == updates);
+    Ok(NupInfo { contents, name, whole_update })
 }
 
 /// One record of a package's meta block: type, reserved, length, payload.
@@ -322,6 +339,12 @@ pub fn dump_dlc(dir: &Path) -> Vec<(u64, PathBuf)> {
         .filter(|(n, _)| n.len() == 16)
         .filter_map(|(n, p)| Some((u64::from_str_radix(&n, 16).ok()?, p)))
         .collect()
+}
+
+/// An update folder the build takes as the whole game: its code and a RomFS
+/// (pack_dump.py's `is_version`), the patched RomFS a dump tool writes.
+pub fn dump_whole_update(dir: &Path) -> bool {
+    dump_updates(dir).iter().any(|(_, p)| p.join("exefs/main.npdm").is_file() && p.join("romfs").is_dir())
 }
 
 /// What a dump holds. The game is the program ID in a `main.npdm` (the base
@@ -402,6 +425,10 @@ pub struct ArchiveGame {
     pub format: Option<Format>,
     pub pieces: Vec<Piece>,
     pub has_base: bool,
+    /// No base game, but an update that holds the whole game (its code and
+    /// its complete RomFS): the build takes it as the game (engine README,
+    /// "An update's folder alone will do").
+    pub standalone: bool,
     /// The newest update in the folder.
     pub update: Option<u32>,
     pub dlc: Vec<String>,
@@ -434,8 +461,10 @@ pub fn scan_game(dir: &Path) -> Option<ArchiveGame> {
     let mut issues = Vec::new();
     let (mut size, mut packages, mut nups) = (0, 0, 0);
     let mut nup_name = None;
+    let mut whole_update = false;
     let dump = is_dump(dir);
     if dump {
+        whole_update |= dump_whole_update(dir);
         match read_dump(dir) {
             Ok(cs) => pieces.extend(cs.into_iter().map(|c| (c, String::new()))),
             Err(e) => issues.push(e),
@@ -472,6 +501,7 @@ pub fn scan_game(dir: &Path) -> Option<ArchiveGame> {
             match read_nup(&path) {
                 Ok(info) => {
                     nup_name = nup_name.or(info.name);
+                    whole_update |= info.whole_update;
                     pieces.extend(info.contents.into_iter().map(|c| (c, name.clone())));
                 }
                 Err(e) => issues.push(e),
@@ -530,6 +560,7 @@ pub fn scan_game(dir: &Path) -> Option<ArchiveGame> {
             .map(|(c, file)| Piece { kind: c.kind(), title_id: hex(c.title_id), version: c.version, file })
             .collect(),
         has_base,
+        standalone: !has_base && whole_update,
         update,
         dlc: dlc.into_iter().collect(),
         known: false,
@@ -707,10 +738,15 @@ pub mod tests {
             kinds,
             [(Kind::Base, 0x0400C3F00006E000, 0), (Kind::Update, 0x0400C3F00006E000, 131072), (Kind::Dlc, 0x0400C3F00006E000, 0)]
         );
+        assert!(!info.whole_update);
         // A container with no base game: the update is the whole game.
         fake_nup(&p, &[(0, 0, 0), (1, 0x0400C3F00006E000, 655360)], None);
         let info = read_nup(&p).unwrap();
         assert_eq!(info.contents, [Content { title_id: 0x0400C3F00006E800, version: 655360 }]);
+        assert!(info.whole_update);
+        // An update alone, not marked standalone: it needs its base elsewhere.
+        fake_nup(&p, &[(1, 0x0400C3F00006E000, 65536)], None);
+        assert!(!read_nup(&p).unwrap().whole_update);
         // Cut short: the header's size says so.
         let bytes = fs::read(&p).unwrap();
         fs::write(&p, &bytes[..bytes.len() - 1]).unwrap();
@@ -728,6 +764,50 @@ pub mod tests {
         assert_eq!(cs[1], Content { title_id: 0x040074A01BF12800, version: 458752 });
         assert_eq!(cs[2].kind(), Kind::Dlc);
         assert!(is_dump(dir.path()));
+    }
+
+    #[test]
+    fn an_update_dump_alone_is_a_whole_game() {
+        // As a dump tool writes Mario Kart World's 1.8.0: updates/917504/ with
+        // its code and its patched RomFS, and no base/.
+        let root = tempfile::tempdir().unwrap();
+        let g = root.path().join("mkw 1.8.0 update");
+        fs::create_dir_all(g.join("updates/917504/exefs")).unwrap();
+        fs::create_dir_all(g.join("updates/917504/romfs/Movie")).unwrap();
+        fs::write(g.join("updates/917504/exefs/main.npdm"), fake_npdm(0x0400C3F00006E000)).unwrap();
+        fs::write(g.join("updates/917504/romfs/Movie/StaffRoll_00.webm"), "x").unwrap();
+        let game = scan_game(&g).unwrap();
+        assert_eq!((game.title_id.as_str(), game.format), ("0400C3F00006E000", Some(Format::Dump)));
+        assert_eq!((game.has_base, game.standalone, game.update), (false, true, Some(917504)));
+        assert!(game.issues.is_empty(), "{:?}", game.issues);
+        // titledb lists Mario Kart World with no update: nothing is missing.
+        let mut game = game;
+        game.check(&Titledb::from_text("id|rightsId|version\n0400C3F00006E000|0|\n"));
+        assert!(game.known && !game.update_missing && game.latest_update.is_none());
+
+        // Code without a RomFS is no whole game: it needs its base.
+        fs::remove_dir_all(g.join("updates/917504/romfs")).unwrap();
+        assert!(!scan_game(&g).is_some_and(|g| g.standalone));
+        // An update NSP is a patch, never the whole game.
+        let n = root.path().join("Wonder");
+        fs::create_dir_all(&n).unwrap();
+        fs::write(n.join("Wonder [010015100B514800][v327680].nsp"), "x").unwrap();
+        let game = scan_game(&n).unwrap();
+        assert!(!game.has_base && !game.standalone);
+    }
+
+    /// Reads a real game folder, read-only, against the launcher's cached
+    /// titledb list: `NXL_SCAN=<folder> cargo test real_folder -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn real_folder() {
+        let Some(dir) = std::env::var_os("NXL_SCAN") else { return };
+        let mut game = scan_game(Path::new(&dir)).expect("no game files there");
+        let data = std::env::var_os("HOME").map(PathBuf::from).unwrap().join("Library/Application Support/dev.nxlauncher.desktop");
+        if let Some(db) = crate::titledb::load(&data) {
+            game.check(&db);
+        }
+        println!("{}", serde_json::to_string_pretty(&game).unwrap());
     }
 
     #[test]

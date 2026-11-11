@@ -274,6 +274,8 @@ export type ArchiveGame = {
   format: "package" | "nup" | "dump" | null;
   pieces: ArchivePiece[];
   hasBase: boolean;
+  /** No base game, but an update holding the whole game (code and complete RomFS): the build takes it as the game. */
+  standalone: boolean;
   /** The newest update in the folder. */
   update: number | null;
   dlc: string[];

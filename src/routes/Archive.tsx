@@ -53,7 +53,8 @@ function store(key: string, value: string) {
   }
 }
 
-const lacks = (g: ArchiveGame) => !g.hasBase || g.updateMissing || g.missingDlc.length > 0 || g.issues.length > 0;
+const lacks = (g: ArchiveGame) =>
+  (!g.hasBase && !g.standalone) || g.updateMissing || g.missingDlc.length > 0 || g.issues.length > 0;
 
 /** The archive: one folder per game, with its base game, updates and DLC. */
 export default function Archive({ library, dropped, onDropTaken, onBuild, onError }: Props) {
@@ -352,9 +353,16 @@ function Chip({ tone, children }: { tone: Tone; children: React.ReactNode }) {
 /** What the folder holds against what titledb says exists. */
 function chips(g: ArchiveGame, titledbOn: boolean): [Tone, string][] {
   const out: [Tone, string][] = [];
-  out.push(g.hasBase ? ["ok", "Gioco base"] : ["bad", "Manca il gioco base"]);
+  out.push(
+    g.hasBase
+      ? ["ok", "Gioco base"]
+      : g.standalone
+        ? ["ok", "Update completo: basta da solo"]
+        : ["bad", "Manca il gioco base"],
+  );
   if (g.known) {
-    if (g.latestUpdate === null) out.push(["ok", "Nessun update esistente"]);
+    // titledb may know the game but none of its updates (most Switch 2 games): yours is not "missing".
+    if (g.latestUpdate === null) out.push(g.update === null ? ["ok", "Nessun update esistente"] : ["ok", `Update v${g.update}`]);
     else if (!g.updateMissing) out.push(["ok", `Update v${g.update} (l'ultimo)`]);
     else if (g.update === null) out.push(["warn", `Manca l'update v${g.latestUpdate}`]);
     else out.push(["warn", `Update v${g.update}, l'ultimo è v${g.latestUpdate}`]);
