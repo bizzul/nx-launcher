@@ -116,6 +116,91 @@ export const settingsGet = (titleId: string) =>
 export const settingsSave = (titleId: string, choices: Record<string, string>) =>
   invoke<GameSettings>("settings_save", { titleId, choices });
 
+// ── Launcher settings ───────────────────────────────────────────────────────
+
+export type Config = { prodKeys: string | null };
+export const configGet = () => invoke<Config>("config_get");
+/** Remembers only the path of prod.keys; `null` forgets it. */
+export const configSetKeys = (path: string | null) => invoke<Config>("config_set_keys", { path });
+
+// ── Building (docs/frontends.md, "Building: the NSP script") ────────────────
+
+export type SourceInfo = {
+  path: string;
+  kind: "nsp" | "nup" | "dump";
+  name: string;
+  needsKeys: boolean;
+  sizeBytes: number;
+  files: string[];
+  buildDir: string;
+  previousBuild: boolean;
+};
+
+export type Preflight = {
+  source: SourceInfo;
+  keys: string | null;
+  freeBytes: number;
+  neededBytes: number;
+  blockers: string[];
+  warnings: string[];
+};
+
+export type Stage = {
+  k: number;
+  name: string;
+  status: "running" | "ok" | "warn" | "failed" | "stopped";
+  summary: string;
+  elapsed: number | null;
+};
+
+export type BuildProgress = {
+  done: number | null;
+  total: number | null;
+  unit: string;
+  est: boolean;
+  note: string;
+  /** 0–0.99, or null when the work cannot be counted. */
+  frac: number | null;
+  eta: number | null;
+  elapsed: number;
+};
+
+export type BuildSnapshot = {
+  source: SourceInfo;
+  status: "running" | "succeeded" | "failed" | "cancelled";
+  startedAt: number;
+  finishedAt: number | null;
+  error: string | null;
+  stages: Stage[];
+  totalStages: number;
+  step: string;
+  progress: BuildProgress | null;
+  game: {
+    titleId: string;
+    name: string;
+    version: string;
+    out: string | null;
+    icon: string | null;
+  } | null;
+  messages: { t: number; text: string; red: boolean }[];
+  stderr: string[];
+  imported: string | null;
+};
+
+export const buildPreflight = (path: string) => invoke<Preflight>("build_preflight", { path });
+export const buildStart = (path: string) => invoke<BuildSnapshot>("build_start", { path });
+export const buildStatus = () => invoke<BuildSnapshot | null>("build_status");
+export const buildCancel = () => invoke<void>("build_cancel");
+export const buildDismiss = () => invoke<void>("build_dismiss");
+/** Opens the build's logs folder (worked out in Rust from the current build). */
+export const buildReveal = () => invoke<void>("build_reveal");
+
+export const onBuildUpdated = (cb: (snap: BuildSnapshot) => void) =>
+  listen<BuildSnapshot>("build-updated", (e) => cb(e.payload));
+export const onLibraryChanged = (cb: () => void) => listen("library-changed", () => cb());
+
+export const fileSrc = (path: string) => convertFileSrc(path);
+
 /** The cached PNG icon, served by Tauri's asset protocol. */
 export const iconSrc = (game: Game) =>
   game.iconPath ? convertFileSrc(game.iconPath) : null;

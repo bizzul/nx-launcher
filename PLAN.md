@@ -167,7 +167,8 @@ Per provarla senza un gioco vero: `scripts/make-fake-library.sh` crea in `fixtur
 - "Solo per questa partita": override nell'ambiente, senza scrivere le preferenze.
 - **Traguardo:** si cambia il frame rate dal launcher e il gioco lo applica, anche se poi lo apri dal Finder.
 
-### Fase 3: build dall'interfaccia
+### Fase 3: build dall'interfaccia ✅
+Per provarla senza un gioco: avvia l'app con `open --env NXL_BUILD_SCRIPT=$PWD/scripts/fake-build.py "src-tauri/target/debug/bundle/macos/NX Launcher.app"`. `scripts/fake-build.py` riproduce gli eventi di una build vera (nomi delle fasi reali, `game`, `warn`, Annulla con exit 130) e alla fine crea un'app finta; una sorgente con "fail" nel nome si ferma con un errore. Senza la variabile si usa lo script vero di nxnative.
 - Aggiungi gioco: cartella o `.nup`; selettore per `prod.keys` (**si salva solo il percorso**, il file non viene mai copiato).
 - Controllo dello spazio prima di partire.
 - Vista build: barra per stage (`k`/`n`, dove `n` può crescere), barra di `progress` (indeterminata quando `frac` è `null`), ETA, log dei `say` (rossi quelli `[RED] `), pulsante Annulla.

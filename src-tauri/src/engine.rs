@@ -33,8 +33,13 @@ impl Engine {
         }
     }
 
+    /// The packing script. `NXL_BUILD_SCRIPT` replaces it, for development:
+    /// `scripts/fake-build.py` plays a build's events without a game.
     pub fn build_script(&self) -> PathBuf {
-        self.root.join("scripts/build_ipa_from_nsp.py")
+        match std::env::var_os("NXL_BUILD_SCRIPT") {
+            Some(p) if !p.is_empty() => PathBuf::from(p),
+            _ => self.root.join("scripts/build_ipa_from_nsp.py"),
+        }
     }
 }
 
@@ -55,6 +60,12 @@ pub struct DoctorReport {
     checks: Vec<Check>,
     /// The PATH every child process gets, shown so problems are visible.
     child_path: String,
+}
+
+impl DoctorReport {
+    pub fn failed_labels(&self) -> Vec<&'static str> {
+        self.checks.iter().filter(|c| !c.ok).map(|c| c.label).collect()
+    }
 }
 
 /// The PATH given to every child process: Python, xcodebuild, the game.

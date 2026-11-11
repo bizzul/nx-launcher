@@ -7,6 +7,25 @@ export function formatDuration(seconds: number): string {
   return h ? `${h} h ${m} min` : `${m} min`;
 }
 
+export function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return `${bytes.toLocaleString("it", { maximumFractionDigits: i >= 3 ? 1 : 0 })} ${units[i]}`;
+}
+
+/** "1:05:30" · "4:07" · "0:09" */
+export function formatClock(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
 /** "oggi, 14:30" · "ieri, 09:12" · "3 nov" */
 export function formatWhen(unix: number): string {
   const d = new Date(unix * 1000);

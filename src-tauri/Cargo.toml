@@ -24,9 +24,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
-tokio = { version = "1.54.1", features = ["process"] }
+tokio = { version = "1.54.1", features = ["io-util", "process", "rt", "time"] }
 plist = "1.10.3"
-nix = { version = "0.31.3", features = ["signal"] }
+nix = { version = "0.31.3", features = ["fs", "signal"] }
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 

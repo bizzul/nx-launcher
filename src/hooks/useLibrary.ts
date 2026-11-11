@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { libraryList, onGameExited, type Game } from "../lib/ipc";
+import { libraryList, onGameExited, onLibraryChanged, type Game } from "../lib/ipc";
 
 /** The library, kept current with the games' exits. */
 export function useLibrary() {
@@ -16,9 +16,9 @@ export function useLibrary() {
 
   useEffect(() => {
     refresh();
-    const unlisten = onGameExited(update);
+    const unlisten = [onGameExited(update), onLibraryChanged(refresh)];
     return () => {
-      unlisten.then((off) => off());
+      unlisten.forEach((u) => u.then((off) => off()));
     };
   }, [refresh, update]);
 

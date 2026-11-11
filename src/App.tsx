@@ -3,18 +3,21 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { useLibrary } from "./hooks/useLibrary";
 import { libraryImport } from "./lib/ipc";
+import Build from "./routes/Build";
 import Doctor from "./routes/Doctor";
 import GameDetail from "./routes/GameDetail";
 import GameSettingsView from "./routes/GameSettings";
 import Library from "./routes/Library";
 
-type View = "library" | "settings" | "doctor";
+type View = "library" | "settings" | "build" | "doctor";
 
 export default function App() {
   const [view, setView] = useState<View>("library");
   const { games, refresh, update } = useLibrary();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  /** A game folder or .nup dropped on the window, handed to the build view. */
+  const [buildSource, setBuildSource] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
 
   const toast = useCallback((text: string) => {
@@ -49,13 +52,21 @@ export default function App() {
     if (picked?.length) importPaths(picked);
   };
 
-  // Apps dropped anywhere on the window are added to the library.
+  // Dropped on the window: built apps (.app) join the library; a game's
+  // folder or a .nup goes to the build view.
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type === "enter" || payload.type === "over") setDragging(true);
       else {
         setDragging(false);
-        if (payload.type === "drop") importPaths(payload.paths);
+        if (payload.type !== "drop") return;
+        const apps = payload.paths.filter((p) => p.endsWith(".app"));
+        const sources = payload.paths.filter((p) => !p.endsWith(".app"));
+        if (apps.length) importPaths(apps);
+        if (sources.length) {
+          setBuildSource(sources[0]!);
+          setView("build");
+        }
       }
     });
     return () => {
@@ -70,8 +81,11 @@ export default function App() {
       <header className="flex h-13 shrink-0 items-center gap-6 border-b border-neutral-200 px-5 dark:border-neutral-800">
         <h1 className="font-semibold tracking-tight">NX Launcher</h1>
         <nav className="flex gap-1 text-sm">
-          <Tab active={view !== "doctor"} onClick={() => setView("library")}>
+          <Tab active={view === "library" || view === "settings"} onClick={() => setView("library")}>
             Libreria{games?.length ? <span className="ml-1.5 text-neutral-400">{games.length}</span> : null}
+          </Tab>
+          <Tab active={view === "build"} onClick={() => setView("build")}>
+            Compila
           </Tab>
           <Tab active={view === "doctor"} onClick={() => setView("doctor")}>
             Ambiente
@@ -85,6 +99,16 @@ export default function App() {
       <main className="flex min-h-0 flex-1">
         {view === "doctor" ? (
           <Doctor />
+        ) : view === "build" ? (
+          <Build
+            pendingSource={buildSource}
+            onSourceTaken={() => setBuildSource(null)}
+            onOpenGame={(titleId) => {
+              setSelectedId(titleId);
+              setView("library");
+            }}
+            onError={toast}
+          />
         ) : view === "settings" && selected ? (
           <GameSettingsView
             key={selected.titleId}
