@@ -51,6 +51,12 @@ if listed.is_file():
 (app / 'Contents/Resources/dm/fake_settings.tsv').write_text(''.join(r + '\n' for r in rows))
 PY
 
+# The rewriter's header with main's build ID (patch_nso.py writes it into main.fixups.tsv);
+# cheat files are named after its first 16 hex digits.
+bid=$(printf '%s' "$id" | shasum | cut -c1-32)
+printf '# BUILD_ID\t%s\n' "$bid" > "$res/dm/main.fixups.tsv"
+BID=$(echo "${bid:0:16}" | tr '[:lower:]' '[:upper:]')
+
 cat > "$app/Contents/MacOS/nxnative" <<EOF
 #!/bin/bash
 # Fake nxnative launcher: same folders, log and settings order as dm/mac/launcher.c, no game.
@@ -72,6 +78,12 @@ while IFS=\$'\t' read -r env def; do
   fi
   echo "launcher: env \$env=\$val (\$src)"
 done < "\$res/dm/fake_settings.tsv"
+[ -n "\${DM_HOME_QUIT_TEXT:-}" ] && echo "launcher: Home prompt title: \$(printf '%s\n' "\$DM_HOME_QUIT_TEXT" | sed -n 2p)"
+cs=\$(defaults read org.nxnative.$(echo "$id" | tr '[:upper:]' '[:lower:]') cloudSaves.folder 2>/dev/null) && echo "launcher: cloud saves folder: \$cs"
+ch="\$sup/cheats"
+if [ -f "\$ch/.cheats-off-$id" ]; then echo "launcher: cheats off (master switch)"
+elif [ -f "\$ch/$BID.txt" ]; then echo "launcher: cheats for build $BID, on: \$(tr '\n' ',' < "\$ch/$BID.enabled" 2>/dev/null)"
+fi
 trap 'echo "launcher: SIGTERM, stopping"; exit 143' TERM INT HUP
 sleep $secs & wait \$!
 echo "launcher: the host exited with $code"

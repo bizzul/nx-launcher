@@ -35,6 +35,7 @@ def main():
     ap.add_argument('--platform', choices=('ios', 'mac', 'mac-app'), default='ios')
     ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'json', 'off'), default='auto')
     ap.add_argument('--work-dir')
+    ap.add_argument('--romfs', choices=('bundle', 'separate'), default='bundle')
     a = ap.parse_args()   # an argument error: usage on stderr, exit 2, no JSON
 
     src = Path(a.nsp_dir).absolute()
@@ -43,8 +44,9 @@ def main():
     tid = f'0100FA4E{zlib.crc32(name.encode()) & 0xFFFF:04X}0000'
     work = Path(a.work_dir) if a.work_dir else folder / f'{tid}_build'
     (work / 'logs').mkdir(parents=True, exist_ok=True)
-    out = Path(a.out) if a.out else folder / f'{name}.app'
-    stages = ['rewrite', 'shader split', 'Mac shaders', 'Mac host', 'Pipeline archive', 'Mac app']
+    ios = a.platform == 'ios'
+    out = Path(a.out) if a.out else folder / (f'{name}.ipa' if ios else f'{name}.app')
+    stages = ['rewrite', 'shader split', 'Mac shaders', 'Mac host', 'Pipeline archive', 'IPA pack' if ios else 'Mac app']
     n = len(stages)
 
     try:
@@ -93,6 +95,19 @@ def main():
         wait(1)
         ev('say', msg='pipeline archive: binary archive failed for applegpu_g17p (FAKE); the app is packed without it')
         ev('stage_end', k=5, name='Pipeline archive', ok=True, warn=True, summary='', elapsed=1)
+
+        if ios:   # an IPA is a zip of Payload/<app>.app: a stand-in one, with a fake app inside
+            ev('stage', k=6, n=n, name='IPA pack', step='pack')
+            payload = work / 'Payload'
+            subprocess.run([str(HERE / 'make-fake-game.sh'), str(payload), tid, name, '0', '1'], capture_output=True)
+            subprocess.run(['/usr/bin/ditto', '-c', '-k', '--keepParent', str(payload), str(out)], capture_output=True)
+            wait(1)
+            ev('stage_end', k=6, name='IPA pack', ok=out.is_file(), summary=out.name, elapsed=1)
+            if a.romfs == 'separate':
+                ev('say', msg=f'romfs separate: copy the game files to the device once with: '
+                              f'scripts/push_romfs.sh {work / "romfs.img"} (FAKE)')
+            ev('say', msg=f'done: {out}')
+            return 0 if out.is_file() else 1
 
         ev('stage', k=6, n=n, name='Mac app', step='pack')
         r = subprocess.run([str(HERE / 'make-fake-game.sh'), str(out.parent), tid, out.stem, '0', '20'],

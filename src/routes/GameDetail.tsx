@@ -7,6 +7,7 @@ import { gameLaunch, gameReveal, gameStop, libraryRemove, type Game } from "../l
 type Props = {
   game: Game;
   onOpenSettings: () => void;
+  onOpenCheats: () => void;
   onChanged: (game: Game) => void;
   onRemoved: () => void;
   onError: (message: string) => void;
@@ -18,7 +19,7 @@ const TONES: Record<Tone, string> = {
   error: "bg-red-500/10 text-red-700 dark:text-red-300",
 };
 
-export default function GameDetail({ game, onOpenSettings, onChanged, onRemoved, onError }: Props) {
+export default function GameDetail({ game, onOpenSettings, onOpenCheats, onChanged, onRemoved, onError }: Props) {
   const [confirm, setConfirm] = useState<"stop" | "remove" | null>(null);
   const now = useNow(15_000);
   const running = game.runningSince !== null;
@@ -105,6 +106,7 @@ export default function GameDetail({ game, onOpenSettings, onChanged, onRemoved,
 
         <div className="mt-5 flex flex-col gap-1 border-t border-neutral-200 pt-4 dark:border-neutral-800">
           <LinkButton onClick={onOpenSettings}>Impostazioni…</LinkButton>
+          <LinkButton onClick={onOpenCheats}>Cheat…</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "app"))}>Mostra nel Finder</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "log"))}>Apri il log</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "saves"))}>Apri i salvataggi</LinkButton>

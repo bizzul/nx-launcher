@@ -1,4 +1,5 @@
 mod build;
+mod cheats;
 mod config;
 mod engine;
 mod library;
@@ -61,10 +62,25 @@ pub async fn import_app(state: &AppState, path: PathBuf) -> Result<Game, String>
         Some(icns) => library::cache_icon(icns, &icons_dir, &info.title_id).await,
         None => None,
     };
-    let mut lib = state.library.lock().unwrap();
-    let game = lib.upsert(info, path, icon);
-    lib.save().map_err(|e| format!("Impossibile salvare la libreria: {e}"))?;
+    let game = {
+        let mut lib = state.library.lock().unwrap();
+        let game = lib.upsert(info, path, icon);
+        lib.save().map_err(|e| format!("Impossibile salvare la libreria: {e}"))?;
+        game
+    };
+    // A new game joins the library's cloud saves folder, if there is one.
+    if let Some(folder) = state.config.lock().unwrap().config.cloud_saves_folder.clone() {
+        write_cloud_folder(&game, Some(&folder));
+    }
     Ok(game)
+}
+
+/// `cloudSaves.folder` in the game's preferences, which its launcher reads
+/// at every start (docs/frontends.md, "The cloud saves folder").
+fn write_cloud_folder(game: &Game, folder: Option<&std::path::Path>) -> bool {
+    let value = folder.map(|f| f.to_string_lossy().into_owned());
+    prefs::set_string(&game.bundle_id, "cloudSaves.folder", value.as_deref());
+    prefs::sync(&game.bundle_id)
 }
 
 #[derive(Serialize)]
@@ -120,7 +136,10 @@ async fn game_launch(
     overrides: Option<BTreeMap<String, String>>,
 ) -> Result<GameView, String> {
     let game = state.game(&title_id)?;
-    let env = settings::check_overrides(&game, &overrides.unwrap_or_default())?;
+    let mut env = settings::check_overrides(&game, &overrides.unwrap_or_default())?;
+    if state.config.lock().unwrap().config.italian_prompts {
+        env.extend(config::italian_prompts(&game.name));
+    }
     runner::launch(&app, &game, settings_window, &env).await?;
     Ok(state.view(&game))
 }
@@ -182,19 +201,130 @@ fn config_set_keys(state: State<AppState>, path: Option<PathBuf>) -> Result<conf
     Ok(store.config.clone())
 }
 
+/// One cloud saves folder for the whole library: written into every game's
+/// preferences (and into games added later); `None` turns cloud saves off.
+/// "icloud" picks iCloud Drive › nxnative Saves, created when missing.
+#[tauri::command]
+fn config_set_cloud_folder(
+    app: AppHandle,
+    state: State<AppState>,
+    path: Option<String>,
+) -> Result<config::Config, String> {
+    let folder = match path.as_deref() {
+        None | Some("") => None,
+        Some("icloud") => {
+            let drive = home(&app)?.join("Library/Mobile Documents/com~apple~CloudDocs");
+            if !drive.is_dir() {
+                return Err("iCloud Drive non è attivo su questo Mac".into());
+            }
+            let f = drive.join("nxnative Saves");
+            std::fs::create_dir_all(&f).map_err(|e| e.to_string())?;
+            Some(f)
+        }
+        Some(p) => {
+            let f = PathBuf::from(p);
+            if !f.is_dir() {
+                return Err(format!("{} non è una cartella", f.display()));
+            }
+            Some(f)
+        }
+    };
+    let games = state.library.lock().unwrap().games().to_vec();
+    let failed: Vec<_> = games.iter().filter(|g| !write_cloud_folder(g, folder.as_deref())).map(|g| g.name.clone()).collect();
+    let mut store = state.config.lock().unwrap();
+    store.config.cloud_saves_folder = folder;
+    store.save().map_err(|e| e.to_string())?;
+    if !failed.is_empty() {
+        return Err(format!("Preferenze non salvate per: {}", failed.join(", ")));
+    }
+    Ok(store.config.clone())
+}
+
+#[tauri::command]
+fn config_set_italian_prompts(state: State<AppState>, on: bool) -> Result<config::Config, String> {
+    let mut store = state.config.lock().unwrap();
+    store.config.italian_prompts = on;
+    store.save().map_err(|e| e.to_string())?;
+    Ok(store.config.clone())
+}
+
+// ── Cheats ──────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn cheats_get(app: AppHandle, state: State<AppState>, title_id: String) -> Result<cheats::CheatsView, String> {
+    Ok(cheats::view(&state.game(&title_id)?, &home(&app)?))
+}
+
+#[tauri::command]
+fn cheats_set(
+    app: AppHandle,
+    state: State<AppState>,
+    title_id: String,
+    build_id: String,
+    enabled: std::collections::BTreeSet<String>,
+) -> Result<cheats::CheatsView, String> {
+    let (game, home) = (state.game(&title_id)?, home(&app)?);
+    cheats::set_enabled(&game, &home, &build_id, &enabled)?;
+    Ok(cheats::view(&game, &home))
+}
+
+#[tauri::command]
+fn cheats_master(app: AppHandle, state: State<AppState>, title_id: String, on: bool) -> Result<cheats::CheatsView, String> {
+    let (game, home) = (state.game(&title_id)?, home(&app)?);
+    cheats::set_master(&game, &home, on)?;
+    Ok(cheats::view(&game, &home))
+}
+
+#[tauri::command]
+fn cheats_import(app: AppHandle, state: State<AppState>, title_id: String, path: PathBuf) -> Result<cheats::CheatsView, String> {
+    let (game, home) = (state.game(&title_id)?, home(&app)?);
+    cheats::import(&game, &home, &path)?;
+    Ok(cheats::view(&game, &home))
+}
+
+/// Opens the game's cheats folder, creating it as the game's menu does.
+#[tauri::command]
+fn cheats_reveal(app: AppHandle, state: State<AppState>, title_id: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = cheats::folder(&home(&app)?, &state.game(&title_id)?.title_id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
 // ── Building ────────────────────────────────────────────────────────────────
 
 /// What a build of `path` would be, and what stands in its way.
 #[tauri::command]
-async fn build_preflight(state: State<'_, AppState>, path: PathBuf) -> Result<build::Preflight, String> {
+async fn build_preflight(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    options: Option<build::Options>,
+) -> Result<build::Preflight, String> {
     let keys = state.config.lock().unwrap().config.prod_keys.clone();
-    build::preflight(&engine::Engine::dev_default(), &path, keys).await
+    build::preflight(&engine::Engine::dev_default(), &path, keys, options.unwrap_or_default()).await
 }
 
 #[tauri::command]
-async fn build_start(app: AppHandle, state: State<'_, AppState>, path: PathBuf) -> Result<build::Snapshot, String> {
+async fn build_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    options: Option<build::Options>,
+) -> Result<build::Snapshot, String> {
     let keys = state.config.lock().unwrap().config.prod_keys.clone();
-    build::start(&app, &engine::Engine::dev_default(), &path, keys).await
+    build::start(&app, &engine::Engine::dev_default(), &path, keys, options.unwrap_or_default()).await
+}
+
+/// Shows what the last build wrote (the IPA, or the Mac app) in Finder.
+#[tauri::command]
+fn build_reveal_output(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let out = {
+        let slot = state.build.lock().unwrap();
+        slot.as_ref().and_then(|r| r.snap.game.as_ref()).and_then(|g| g.out.clone())
+    };
+    let out = out.filter(|o| o.exists()).ok_or("Nessun file creato dall'ultima build")?;
+    app.opener().reveal_item_in_dir(&out).map_err(|e| e.to_string())
 }
 
 /// The current or last build, for a view that opens while it runs.
@@ -300,6 +430,14 @@ pub fn run() {
             settings_save,
             config_get,
             config_set_keys,
+            config_set_cloud_folder,
+            config_set_italian_prompts,
+            cheats_get,
+            cheats_set,
+            cheats_master,
+            cheats_import,
+            cheats_reveal,
+            build_reveal_output,
             build_preflight,
             build_start,
             build_status,

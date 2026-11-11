@@ -4,12 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { useLibrary } from "./hooks/useLibrary";
 import { libraryImport } from "./lib/ipc";
 import Build from "./routes/Build";
+import Cheats from "./routes/Cheats";
 import Doctor from "./routes/Doctor";
 import GameDetail from "./routes/GameDetail";
 import GameSettingsView from "./routes/GameSettings";
 import Library from "./routes/Library";
+import Preferences from "./routes/Preferences";
 
-type View = "library" | "settings" | "build" | "doctor";
+type View = "library" | "settings" | "cheats" | "build" | "doctor" | "prefs";
 
 export default function App() {
   const [view, setView] = useState<View>("library");
@@ -81,7 +83,7 @@ export default function App() {
       <header className="flex h-13 shrink-0 items-center gap-6 border-b border-neutral-200 px-5 dark:border-neutral-800">
         <h1 className="font-semibold tracking-tight">NX Launcher</h1>
         <nav className="flex gap-1 text-sm">
-          <Tab active={view === "library" || view === "settings"} onClick={() => setView("library")}>
+          <Tab active={view === "library" || view === "settings" || view === "cheats"} onClick={() => setView("library")}>
             Libreria{games?.length ? <span className="ml-1.5 text-neutral-400">{games.length}</span> : null}
           </Tab>
           <Tab active={view === "build"} onClick={() => setView("build")}>
@@ -89,6 +91,9 @@ export default function App() {
           </Tab>
           <Tab active={view === "doctor"} onClick={() => setView("doctor")}>
             Ambiente
+          </Tab>
+          <Tab active={view === "prefs"} onClick={() => setView("prefs")}>
+            Impostazioni
           </Tab>
         </nav>
         <button onClick={pickApps} className="btn btn-primary ml-auto">
@@ -99,6 +104,10 @@ export default function App() {
       <main className="flex min-h-0 flex-1">
         {view === "doctor" ? (
           <Doctor />
+        ) : view === "prefs" ? (
+          <Preferences gameCount={games?.length ?? 0} onError={toast} />
+        ) : view === "cheats" && selected ? (
+          <Cheats key={selected.titleId} game={selected} onBack={() => setView("library")} onError={toast} />
         ) : view === "build" ? (
           <Build
             pendingSource={buildSource}
@@ -125,6 +134,7 @@ export default function App() {
                 key={selected.titleId}
                 game={selected}
                 onOpenSettings={() => setView("settings")}
+                onOpenCheats={() => setView("cheats")}
                 onChanged={update}
                 onRemoved={() => {
                   setSelectedId(null);

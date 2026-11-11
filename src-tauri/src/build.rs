@@ -26,6 +26,26 @@ const MAX_STDERR: usize = 60;
 
 // ── What is being built ─────────────────────────────────────────────────────
 
+/// What the build makes: a Mac app for the library, or an IPA to sideload.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Target {
+    #[default]
+    Mac,
+    Ios,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Options {
+    #[serde(default)]
+    pub target: Target,
+    /// IPA only: `--romfs separate`, for a game too big to install: the
+    /// script prints the command that copies its files to the device once.
+    #[serde(default)]
+    pub romfs_separate: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SourceKind {
@@ -158,7 +178,7 @@ fn free_bytes(dir: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-pub async fn preflight(engine: &Engine, path: &Path, keys: Option<PathBuf>) -> Result<Preflight, String> {
+pub async fn preflight(engine: &Engine, path: &Path, keys: Option<PathBuf>, opts: Options) -> Result<Preflight, String> {
     let source = inspect(path)?;
     let mut blockers = Vec::new();
     let mut warnings = Vec::new();
@@ -167,6 +187,12 @@ pub async fn preflight(engine: &Engine, path: &Path, keys: Option<PathBuf>) -> R
     let missing: Vec<_> = doctor.failed_labels();
     if !missing.is_empty() {
         blockers.push(format!("Ambiente incompleto ({}): vedi la scheda Ambiente", missing.join(", ")));
+    }
+    if opts.target == Target::Ios && !crate::engine::has_ios_sdk().await {
+        blockers.push("Per l'IPA serve la piattaforma iOS di Xcode: Xcode → Settings → Components".into());
+    }
+    if opts.target == Target::Ios && source.kind == SourceKind::Nup {
+        warnings.push("I giochi Switch 2 sono testati solo su Mac: su iPhone e iPad potrebbero non partire".into());
     }
     let keys = keys.filter(|k| k.is_file());
     if source.needs_keys && keys.is_none() {
@@ -255,6 +281,7 @@ pub struct BuiltGame {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub source: SourceInfo,
+    pub options: Options,
     pub status: Status,
     pub started_at: u64,
     pub finished_at: Option<u64>,
@@ -272,9 +299,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    fn new(source: SourceInfo) -> Self {
+    fn new(source: SourceInfo, options: Options) -> Self {
         Self {
             source,
+            options,
             status: Status::Running,
             started_at: now(),
             finished_at: None,
@@ -426,20 +454,33 @@ pub fn emit(app: &AppHandle, snap: &Snapshot) {
     let _ = app.emit("build-updated", snap);
 }
 
-pub async fn start(app: &AppHandle, engine: &Engine, path: &Path, keys: Option<PathBuf>) -> Result<Snapshot, String> {
+pub async fn start(
+    app: &AppHandle,
+    engine: &Engine,
+    path: &Path,
+    keys: Option<PathBuf>,
+    opts: Options,
+) -> Result<Snapshot, String> {
     let state = app.state::<AppState>();
     if state.build.lock().unwrap().as_ref().is_some_and(BuildRun::running) {
         return Err("Una build è già in corso".into());
     }
-    let pre = preflight(engine, path, keys).await?;
+    let pre = preflight(engine, path, keys, opts).await?;
     if let Some(b) = pre.blockers.first() {
         return Err(b.clone());
     }
 
+    let platform = match opts.target {
+        Target::Mac => "mac-app",
+        Target::Ios => "ios",
+    };
     let mut cmd = Command::new(&engine.python);
     cmd.arg(engine.build_script())
         .arg(&pre.source.path)
-        .args(["--platform", "mac-app", "--progress", "json"]);
+        .args(["--platform", platform, "--progress", "json"]);
+    if opts.target == Target::Ios && opts.romfs_separate {
+        cmd.args(["--romfs", "separate"]);
+    }
     if let (true, Some(keys)) = (pre.source.needs_keys, &pre.keys) {
         cmd.arg("-k").arg(keys);
     }
@@ -455,7 +496,7 @@ pub async fn start(app: &AppHandle, engine: &Engine, path: &Path, keys: Option<P
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
-    let snap = Snapshot::new(pre.source);
+    let snap = Snapshot::new(pre.source, opts);
     *state.build.lock().unwrap() = Some(BuildRun {
         snap: snap.clone(),
         pgid: child.id().map(|p| p as i32),
@@ -543,7 +584,12 @@ pub async fn start(app: &AppHandle, engine: &Engine, path: &Path, keys: Option<P
             (outcome(&run.snap, status, run.cancel_requested), out)
         };
         let mut imported = None;
-        if result.0 == Status::Succeeded {
+        if result.0 == Status::Succeeded && opts.target == Target::Ios {
+            // An IPA is sideloaded to the device: it is not a library entry.
+            if !out.as_ref().is_some_and(|o| o.exists()) {
+                result = (Status::Failed, Some("Lo script ha finito ma l'IPA non c'è".into()));
+            }
+        } else if result.0 == Status::Succeeded {
             match out {
                 Some(out) => match crate::import_app(&st, out).await {
                     Ok(game) => imported = Some(game.title_id),
@@ -596,7 +642,8 @@ mod tests {
     use super::*;
 
     fn snap() -> Snapshot {
-        Snapshot::new(SourceInfo {
+        Snapshot::new(
+            SourceInfo {
             path: "/g/Game".into(),
             kind: SourceKind::Nup,
             name: "Game".into(),
@@ -605,7 +652,9 @@ mod tests {
             files: vec![],
             build_dir: "/g".into(),
             previous_build: false,
-        })
+            },
+            Options::default(),
+        )
     }
 
     #[test]

@@ -176,7 +176,8 @@ Per provarla senza un gioco: avvia l'app con `open --env NXL_BUILD_SCRIPT=$PWD/s
 - Fine build: exit code + stderr; con `0` aggiorna `appPath` e mette il gioco in libreria.
 - **Traguardo:** da `.nup` a gioco avviabile senza aprire il terminale.
 
-### Fase 4: extra
+### Fase 4: extra ✅
+Tab **Impostazioni** (cloud save, messaggi in italiano, prod.keys), pagina **Cheat…** per gioco, build **IPA** nella scheda Compila, ricerca e ordinamento in libreria. `scripts/make-fake-library.sh` crea anche un file di cheat d'esempio in `fixtures/cheats/`, da importare nella pagina Cheat… di «Avventura di Prova».
 - Cartella cloud save unica per tutti i giochi (`cloudSaves.folder` in ogni dominio).
 - Gestione cheat: import di `<buildID>.txt` e spunte in `.enabled`, scritte **prima** dell'avvio.
 - Prompt Home in italiano tramite `DM_HOME_QUIT_TEXT`.

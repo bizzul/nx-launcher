@@ -9,6 +9,8 @@
 #                       app's env.txt; stops with code 70 (GPU revoked)
 #   Crash Test          no settings list; aborts (code 134) after 3 s
 #
+# and fixtures/cheats/Avventura - trucchi.txt, a cheat file to import.
+#
 # Needs engine/ and engine-venv/ (PLAN.md, 3.2).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -34,6 +36,30 @@ json.dump(d, open(path, 'w'), indent=1)
 PY
 list 0400C3F00006E000 "$tmp/race.json"
 printf 'DM_FULLSCREEN=1\n' > "$tmp/race.env"
+
+# A cheat file to import from the game's Cheat… page: a master, a label, an EdiZon
+# section, a duplicate name ("Monete 999 #2" in .enabled) and code on a header's line.
+mkdir -p fixtures/cheats
+cat > "fixtures/cheats/Avventura - trucchi.txt" <<'EOF'
+[Avventura di Prova - cheat finti per provare il launcher]
+
+{Master Code}
+580F0000 01234567
+
+[--SectionStart:Statistiche--]
+[Vita infinita]
+04000000 00123456 0000270F
+
+[Monete 999]
+04000000 00123460 000003E7
+
+[Monete 999]
+04000000 00123470 000003E7
+[--SectionEnd:Statistiche--]
+
+[Salto lunare] 80000040
+20000000
+EOF
 
 scripts/make-fake-game.sh "$out" 0100FA4E00001000 "Avventura di Prova" 0 20 "$tmp/adventure.json"
 scripts/make-fake-game.sh "$out" 0100FA4E00002000 "Corsa GPU" 70 4 "$tmp/race.json" "$tmp/race.env"

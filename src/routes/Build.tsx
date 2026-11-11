@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { KeysRow } from "../components/KeysRow";
 import { useNow } from "../hooks/useLibrary";
 import { formatBytes, formatClock } from "../lib/format";
 import {
@@ -7,6 +8,7 @@ import {
   buildDismiss,
   buildPreflight,
   buildReveal,
+  buildRevealOutput,
   buildStart,
   buildStatus,
   configGet,
@@ -14,6 +16,7 @@ import {
   fileSrc,
   gameLaunch,
   onBuildUpdated,
+  type BuildOptions,
   type BuildProgress,
   type BuildSnapshot,
   type Preflight,
@@ -37,6 +40,7 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
   const [keys, setKeys] = useState<string | null>(null);
   const [pre, setPre] = useState<Preflight | null>(null);
   const [checking, setChecking] = useState(false);
+  const [opts, setOpts] = useState<BuildOptions>({ target: "mac", romfsSeparate: false });
 
   useEffect(() => {
     buildStatus().then((s) => {
@@ -51,18 +55,23 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
   }, []);
 
   const check = useCallback(
-    async (path: string) => {
+    async (path: string, options: BuildOptions = opts) => {
       setChecking(true);
       try {
-        setPre(await buildPreflight(path));
+        setPre(await buildPreflight(path, options));
       } catch (e) {
         onError(String(e));
       } finally {
         setChecking(false);
       }
     },
-    [onError],
+    [onError, opts],
   );
+
+  const changeOpts = (next: BuildOptions) => {
+    setOpts(next);
+    if (pre) check(pre.source.path, next); // an IPA has its own requirements
+  };
 
   useEffect(() => {
     if (pendingSource && loaded && !snap) {
@@ -91,9 +100,9 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
     }
   };
 
-  const start = async (path: string) => {
+  const start = async (path: string, options: BuildOptions = opts) => {
     try {
-      setSnap(await buildStart(path));
+      setSnap(await buildStart(path, options));
       setPre(null);
     } catch (e) {
       onError(String(e));
@@ -111,7 +120,7 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
         {!loaded ? null : snap ? (
           <BuildView
             snap={snap}
-            onRetry={() => start(snap.source.path)}
+            onRetry={() => start(snap.source.path, snap.options)}
             onDismiss={dismiss}
             onOpenGame={onOpenGame}
             onError={onError}
@@ -138,7 +147,13 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
 
             {checking && <p className="mt-6 text-sm text-neutral-500">Controllo…</p>}
             {pre && !checking && (
-              <PreflightCard pre={pre} onStart={() => start(pre.source.path)} onCancel={() => setPre(null)} />
+              <PreflightCard
+                pre={pre}
+                opts={opts}
+                onOpts={changeOpts}
+                onStart={() => start(pre.source.path)}
+                onCancel={() => setPre(null)}
+              />
             )}
           </>
         )}
@@ -147,33 +162,62 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
   );
 }
 
-function KeysRow({ keys, onPick, onClear }: { keys: string | null; onPick: () => void; onClear: () => void }) {
-  return (
-    <div className="mt-6 flex items-center gap-3 rounded-lg border border-neutral-200 px-4 py-3 text-sm dark:border-neutral-800">
-      <div className="min-w-0 flex-1">
-        <p className="font-medium">prod.keys</p>
-        <p className="truncate font-mono text-xs text-neutral-500" title={keys ?? ""}>
-          {keys ?? "non impostato · serve solo per NSP, XCI e NSZ (non per NUP e dump)"}
-        </p>
-      </div>
-      <button onClick={onPick} className="btn">
-        {keys ? "Cambia…" : "Scegli…"}
-      </button>
-      {keys && (
-        <button onClick={onClear} className="text-xs text-neutral-500 hover:text-red-600">
-          Dimentica
-        </button>
-      )}
-    </div>
-  );
-}
-
-function PreflightCard({ pre, onStart, onCancel }: { pre: Preflight; onStart: () => void; onCancel: () => void }) {
+function PreflightCard({
+  pre,
+  opts,
+  onOpts,
+  onStart,
+  onCancel,
+}: {
+  pre: Preflight;
+  opts: BuildOptions;
+  onOpts: (o: BuildOptions) => void;
+  onStart: () => void;
+  onCancel: () => void;
+}) {
   const s = pre.source;
   const blocked = pre.blockers.length > 0;
+  const targets = [
+    ["mac", "App per Mac"],
+    ["ios", "IPA per iPhone e iPad"],
+  ] as const;
   return (
     <div className="mt-6 rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
-      <h3 className="font-semibold">{s.name}</h3>
+      <div className="flex items-center justify-between gap-4">
+        <h3 className="font-semibold">{s.name}</h3>
+        <div className="inline-flex rounded-lg bg-neutral-200/70 p-0.5 dark:bg-neutral-800" role="radiogroup">
+          {targets.map(([t, label]) => (
+            <button
+              key={t}
+              role="radio"
+              aria-checked={opts.target === t}
+              onClick={() => onOpts({ ...opts, target: t })}
+              className={`rounded-md px-3 py-1 text-sm ${
+                opts.target === t ? "bg-white font-medium shadow-sm dark:bg-neutral-600" : "text-neutral-500"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {opts.target === "ios" && (
+        <label className="mt-3 flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={opts.romfsSeparate}
+            onChange={(e) => onOpts({ ...opts, romfsSeparate: e.target.checked })}
+            className="mt-0.5 accent-sky-500"
+          />
+          <span>
+            File del gioco separati (<code className="font-mono text-xs">--romfs separate</code>)
+            <span className="block text-xs text-neutral-500">
+              Per i giochi troppo grandi da installare: la build ti dirà il comando per copiarli sul dispositivo
+              una volta sola. Serve un iPhone con A17 Pro o più recente, o un iPad con M1 o più recente.
+            </span>
+          </span>
+        </label>
+      )}
       <dl className="mt-3 grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-neutral-500">Tipo</dt>
         <dd>{KIND_NAMES[s.kind]}</dd>
@@ -301,7 +345,26 @@ function BuildView({
         </div>
       )}
 
-      {snap.status === "succeeded" && (
+      {snap.status === "succeeded" && snap.options.target === "ios" && (
+        <Banner tone="ok" title="IPA pronto">
+          Installalo sul tuo iPhone o iPad con AltStore, Sideloadly o LiveContainer; se lo strumento offre
+          «Increased Memory Limit», attivalo: i giochi più grandi ne hanno bisogno.
+          {snap.options.romfsSeparate && (
+            <span className="mt-1 block">
+              Hai scelto i file separati: il comando per copiarli sul dispositivo è nei messaggi qui sotto.
+            </span>
+          )}
+          <div className="mt-3 flex gap-2">
+            <button onClick={safely(buildRevealOutput)} className="btn btn-primary">
+              Mostra l'IPA nel Finder
+            </button>
+            <button onClick={onDismiss} className="btn">
+              Nuova build
+            </button>
+          </div>
+        </Banner>
+      )}
+      {snap.status === "succeeded" && snap.options.target === "mac" && (
         <Banner tone="ok" title="Pronto!">
           {title} è nella libreria.
           <div className="mt-3 flex gap-2">

@@ -118,10 +118,53 @@ export const settingsSave = (titleId: string, choices: Record<string, string>) =
 
 // ── Launcher settings ───────────────────────────────────────────────────────
 
-export type Config = { prodKeys: string | null };
+export type Config = {
+  prodKeys: string | null;
+  cloudSavesFolder: string | null;
+  italianPrompts: boolean;
+};
 export const configGet = () => invoke<Config>("config_get");
 /** Remembers only the path of prod.keys; `null` forgets it. */
 export const configSetKeys = (path: string | null) => invoke<Config>("config_set_keys", { path });
+/** A folder path, "icloud" for iCloud Drive › nxnative Saves, or null to turn cloud saves off. */
+export const configSetCloudFolder = (path: string | null) =>
+  invoke<Config>("config_set_cloud_folder", { path });
+export const configSetItalianPrompts = (on: boolean) =>
+  invoke<Config>("config_set_italian_prompts", { on });
+
+// ── Cheats (docs/frontends.md, "Cheats") ────────────────────────────────────
+
+export type CheatEntry = {
+  /** As <build ID>.enabled writes it: "Name", "Name #2", … */
+  key: string;
+  name: string;
+  kind: "master" | "cheat" | "label";
+  section: string | null;
+};
+
+export type CheatFile = {
+  buildId: string;
+  /** The file of the build this app runs. */
+  current: boolean;
+  entries: CheatEntry[];
+  enabled: string[];
+  error: string | null;
+};
+
+export type CheatsView = {
+  folder: string;
+  buildId: string | null;
+  files: CheatFile[];
+  masterOn: boolean;
+  safeMode: boolean;
+};
+
+export const cheatsGet = (titleId: string) => invoke<CheatsView>("cheats_get", { titleId });
+export const cheatsSet = (titleId: string, buildId: string, enabled: string[]) =>
+  invoke<CheatsView>("cheats_set", { titleId, buildId, enabled });
+export const cheatsMaster = (titleId: string, on: boolean) => invoke<CheatsView>("cheats_master", { titleId, on });
+export const cheatsImport = (titleId: string, path: string) => invoke<CheatsView>("cheats_import", { titleId, path });
+export const cheatsReveal = (titleId: string) => invoke<void>("cheats_reveal", { titleId });
 
 // ── Building (docs/frontends.md, "Building: the NSP script") ────────────────
 
@@ -165,8 +208,16 @@ export type BuildProgress = {
   elapsed: number;
 };
 
+export type BuildOptions = {
+  /** "mac": a Mac app for the library; "ios": an IPA to sideload. */
+  target: "mac" | "ios";
+  /** IPA only: --romfs separate, for a game too big to install. */
+  romfsSeparate: boolean;
+};
+
 export type BuildSnapshot = {
   source: SourceInfo;
+  options: BuildOptions;
   status: "running" | "succeeded" | "failed" | "cancelled";
   startedAt: number;
   finishedAt: number | null;
@@ -187,8 +238,12 @@ export type BuildSnapshot = {
   imported: string | null;
 };
 
-export const buildPreflight = (path: string) => invoke<Preflight>("build_preflight", { path });
-export const buildStart = (path: string) => invoke<BuildSnapshot>("build_start", { path });
+export const buildPreflight = (path: string, options: BuildOptions) =>
+  invoke<Preflight>("build_preflight", { path, options });
+export const buildStart = (path: string, options: BuildOptions) =>
+  invoke<BuildSnapshot>("build_start", { path, options });
+/** Shows the file the last build wrote (the IPA, or the Mac app) in Finder. */
+export const buildRevealOutput = () => invoke<void>("build_reveal_output");
 export const buildStatus = () => invoke<BuildSnapshot | null>("build_status");
 export const buildCancel = () => invoke<void>("build_cancel");
 export const buildDismiss = () => invoke<void>("build_dismiss");

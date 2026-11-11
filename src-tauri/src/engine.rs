@@ -178,6 +178,13 @@ pub async fn doctor(engine: &Engine) -> DoctorReport {
     DoctorReport { checks, child_path: path }
 }
 
+/// Whether Xcode's iOS platform is installed (a separate download in
+/// Xcode → Settings → Components), which an IPA build needs.
+pub async fn has_ios_sdk() -> bool {
+    let path = child_path(std::env::var("PATH").ok().as_deref());
+    run("xcrun", &["--sdk", "iphoneos", "--show-sdk-path"], &path).await.0
+}
+
 /// Runs a program with the launcher's PATH. Returns whether it succeeded,
 /// and the first line it printed (stdout, else stderr, else the spawn error).
 async fn run(program: impl AsRef<OsStr>, args: &[&str], path: &str) -> (bool, String) {
