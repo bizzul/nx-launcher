@@ -1,97 +1,142 @@
-import { useEffect, useState } from "react";
-import { doctor, type DoctorReport } from "./lib/ipc";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useState } from "react";
+import { useLibrary } from "./hooks/useLibrary";
+import { libraryImport } from "./lib/ipc";
+import Doctor from "./routes/Doctor";
+import GameDetail from "./routes/GameDetail";
+import Library from "./routes/Library";
+
+type View = "library" | "doctor";
 
 export default function App() {
-  const [report, setReport] = useState<DoctorReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  const [view, setView] = useState<View>("library");
+  const { games, refresh, update } = useLibrary();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
 
-  async function runDoctor() {
-    setRunning(true);
-    setError(null);
-    try {
-      setReport(await doctor());
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRunning(false);
-    }
-  }
-
-  useEffect(() => {
-    runDoctor();
+  const toast = useCallback((text: string) => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t, { id, text }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 7000);
   }, []);
 
-  const failed = report?.checks.filter((c) => !c.ok).length ?? 0;
+  const importPaths = useCallback(
+    async (paths: string[]) => {
+      try {
+        const report = await libraryImport(paths);
+        await refresh();
+        report.errors.forEach(toast);
+        if (report.added.length) {
+          setView("library");
+          setSelectedId(report.added[0]!.titleId);
+        }
+      } catch (e) {
+        toast(String(e));
+      }
+    },
+    [refresh, toast],
+  );
+
+  const pickApps = async () => {
+    const picked = await open({
+      multiple: true,
+      title: "Scegli i giochi creati da nxnative",
+      filters: [{ name: "Giochi nxnative", extensions: ["app"] }],
+    });
+    if (picked?.length) importPaths(picked);
+  };
+
+  // Apps dropped anywhere on the window are added to the library.
+  useEffect(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (payload.type === "enter" || payload.type === "over") setDragging(true);
+      else {
+        setDragging(false);
+        if (payload.type === "drop") importPaths(payload.paths);
+      }
+    });
+    return () => {
+      unlisten.then((off) => off());
+    };
+  }, [importPaths]);
+
+  const selected = games?.find((g) => g.titleId === selectedId) ?? null;
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10">
-      <header className="mb-8 flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">NX Launcher</h1>
-          <p className="mt-1 text-sm text-neutral-500">
-            Fase 0 · controllo dell'ambiente per nxnative
-          </p>
-        </div>
-        <button
-          onClick={runDoctor}
-          disabled={running}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-        >
-          {running ? "Controllo…" : "Ricontrolla"}
+    <div className="flex h-screen flex-col">
+      <header className="flex h-13 shrink-0 items-center gap-6 border-b border-neutral-200 px-5 dark:border-neutral-800">
+        <h1 className="font-semibold tracking-tight">NX Launcher</h1>
+        <nav className="flex gap-1 text-sm">
+          <Tab active={view === "library"} onClick={() => setView("library")}>
+            Libreria{games?.length ? <span className="ml-1.5 text-neutral-400">{games.length}</span> : null}
+          </Tab>
+          <Tab active={view === "doctor"} onClick={() => setView("doctor")}>
+            Ambiente
+          </Tab>
+        </nav>
+        <button onClick={pickApps} className="btn btn-primary ml-auto">
+          Aggiungi gioco
         </button>
       </header>
 
-      {error && (
-        <p className="mb-4 rounded-md bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">
-          {error}
-        </p>
-      )}
+      <main className="flex min-h-0 flex-1">
+        {view === "doctor" ? (
+          <Doctor />
+        ) : games === null ? null : (
+          <>
+            <Library games={games} selectedId={selectedId} onSelect={setSelectedId} onAdd={pickApps} />
+            {selected && (
+              <GameDetail
+                key={selected.titleId}
+                game={selected}
+                onChanged={update}
+                onRemoved={() => {
+                  setSelectedId(null);
+                  refresh();
+                }}
+                onError={toast}
+              />
+            )}
+          </>
+        )}
+      </main>
 
-      {report && (
-        <>
-          <p
-            className={`mb-4 text-sm font-medium ${failed ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}
-          >
-            {failed
-              ? `${failed} ${failed === 1 ? "problema" : "problemi"} da risolvere`
-              : "Tutto pronto per compilare e avviare i giochi"}
+      {dragging && (
+        <div className="pointer-events-none fixed inset-3 grid place-items-center rounded-2xl border-2 border-dashed border-sky-500 bg-sky-500/10 backdrop-blur-[2px]">
+          <p className="rounded-full bg-sky-500 px-4 py-2 text-sm font-medium text-white">
+            Rilascia per aggiungere alla libreria
           </p>
-
-          <ul className="divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-            {report.checks.map((c) => (
-              <li key={c.id} className="flex gap-3 px-4 py-3">
-                <span
-                  aria-label={c.ok ? "ok" : "da sistemare"}
-                  className={`mt-1.5 size-2.5 shrink-0 rounded-full ${c.ok ? "bg-emerald-500" : "bg-red-500"}`}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{c.label}</p>
-                  <p className="truncate font-mono text-xs text-neutral-500" title={c.detail}>
-                    {c.detail || "—"}
-                  </p>
-                  {c.fix && (
-                    <code className="mt-2 block select-all rounded bg-neutral-100 px-2 py-1 font-mono text-xs dark:bg-neutral-900">
-                      {c.fix}
-                    </code>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-
-          <details className="mt-6 text-sm">
-            <summary className="cursor-pointer text-neutral-500">
-              PATH dei processi figli
-            </summary>
-            <ol className="mt-2 space-y-0.5 font-mono text-xs text-neutral-500">
-              {report.childPath.split(":").map((dir, i) => (
-                <li key={i}>{dir || "(vuoto)"}</li>
-              ))}
-            </ol>
-          </details>
-        </>
+        </div>
       )}
-    </main>
+
+      <div className="fixed bottom-4 left-1/2 flex w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 flex-col gap-2">
+        {toasts.map((t) => (
+          <p
+            key={t.id}
+            role="alert"
+            className="rounded-lg bg-neutral-900 px-4 py-2.5 text-sm text-white shadow-lg dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {t.text}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Tab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-md px-3 py-1.5 ${
+        active
+          ? "bg-neutral-200/70 font-medium dark:bg-neutral-800"
+          : "text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+      }`}
+    >
+      {children}
+    </button>
   );
 }

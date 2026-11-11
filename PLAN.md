@@ -122,7 +122,7 @@ pnpm tauri dev
 
 | Modulo Rust | Responsabilità |
 |---|---|
-| `library.rs` | `library.json` in `~/Library/Application Support/NXLauncher/`; importa le `.app` esistenti (legge `Info.plist` → `DMTitleID`, nome, icona); aggiunge sorgenti (cartella NSP, `.nup`, dump). |
+| `library.rs` | `library.json` in `~/Library/Application Support/dev.nxlauncher.desktop/`; importa le `.app` esistenti (legge `Info.plist` → `DMTitleID`, nome, icona); aggiunge sorgenti (cartella NSP, `.nup`, dump). |
 | `builder.rs` | Lancia Python con `--progress json`, legge stdout riga per riga, **converte ogni riga in un enum `BuildEvent`** e lo invia alla UI su un `Channel`. Cattura stderr. Annulla con SIGINT (exit 130). Una build alla volta. |
 | `launcher_json.rs` | Tipi serde per lo schema 1 di `launcher.json`. Ignora i campi sconosciuti e accetta sezioni nuove. |
 | `prefs.rs` | Legge e scrive `launcher.<ENV>` con `CFPreferencesSetAppValue` sul dominio `org.nxnative.<titleID>`. Rimuove la chiave quando il valore torna al default. |
@@ -149,10 +149,12 @@ type Game = {
 
 ## 5. Roadmap per fasi
 
-### Fase 0: setup (½ giornata)
+### Fase 0: setup (½ giornata) ✅
 Sezione 3 completa. Traguardo: `pnpm tauri dev` apre una finestra vuota e il motore compila un gioco **da terminale**.
 
-### Fase 1: libreria e avvio (MVP)
+### Fase 1: libreria e avvio (MVP) ✅
+Per provarla senza un gioco vero: `scripts/make-fake-game.sh fixtures/fake-games <title ID> "<nome>" [codice di uscita] [secondi]` crea un'app finta con la stessa struttura di quelle di nxnative.
+
 - Import di una `.app` già costruita (drag & drop o pulsante) → lettura di `Info.plist` → griglia con icona e nome.
 - **Play** → spawn di `Contents/MacOS/nxnative`, badge "In gioco", exit code tradotto (`70` → "macOS ha revocato la GPU", `134` → "crash, apri il log").
 - "Mostra log", "Mostra salvataggi", "Mostra nel Finder".

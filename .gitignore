@@ -25,3 +25,6 @@ dist-ssr
 
 # nxnative Python venv (recreate: see PLAN.md 3.2)
 engine-venv/
+
+# Fake games made by scripts/make-fake-game.sh
+fixtures/
