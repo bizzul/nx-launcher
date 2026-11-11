@@ -539,6 +539,14 @@ pub async fn start(
     if let (true, Some(keys)) = (pre.source.needs_keys, &pre.keys) {
         cmd.arg("-k").arg(keys);
     }
+    // The game's cover, for an app whose files carry no icon (a dump, a NUP
+    // without control data): the script keeps a game's own icon over it.
+    let cover = pre.source.title_id.as_deref().and_then(|id| {
+        state.library.lock().unwrap().get(id).and_then(|g| g.cover_path.clone())
+    });
+    if let Some(cover) = cover.filter(|p| p.is_file()) {
+        cmd.arg("--fallback-icon").arg(cover);
+    }
     cmd.current_dir(&engine.root)
         .env("PATH", child_path(std::env::var("PATH").ok().as_deref()))
         .env("PYTHONUNBUFFERED", "1")
@@ -660,6 +668,8 @@ pub async fn start(
                             g.build_options = Some(opts);
                         }
                         let _ = lib.save();
+                        // A new game gets its cover (in the background).
+                        crate::fetch_covers(&app, Some(vec![game.title_id.clone()]));
                         imported = Some(game.title_id)
                     }
                     Err(e) => result = (Status::Failed, Some(format!("App creata, ma non aggiunta alla libreria: {e}"))),

@@ -1,15 +1,17 @@
 //! Starting a game, following it until it exits, stopping it, and opening
 //! the files nxnative keeps for it (docs/frontends.md, "Starting a game").
 
+use crate::gamelog::{GameStatus, LogWatch};
 use crate::library::{classify_exit, now, ExitInfo, Game, EXECUTABLE};
 use crate::{AppState, GameView};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 use tokio::process::Command;
@@ -20,6 +22,22 @@ pub struct Session {
     started: Instant,
     pub started_at: u64,
     stop_requested: bool,
+    /// What the game is doing, kept current from its log (follow_log).
+    status: Arc<Mutex<GameStatus>>,
+}
+
+impl Session {
+    pub fn status(&self) -> GameStatus {
+        self.status.lock().unwrap().clone()
+    }
+}
+
+/// `game-status`: what a running game is doing changed.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusEvent<'a> {
+    title_id: &'a str,
+    status: &'a GameStatus,
 }
 
 /// Starts the app's own launcher, `Contents/MacOS/nxnative`, as our child, so
@@ -52,22 +70,60 @@ pub async fn launch(
     }
     // Already checked against the game's settings list (settings::check_overrides).
     cmd.envs(overrides.iter().map(|(k, v)| (k, v)));
+    // The log this session writes is made after this (the app's launcher starts a new one).
+    let spawned = SystemTime::now();
     let mut child = cmd.spawn().map_err(|e| format!("Impossibile avviare {}: {e}", game.name))?;
     let pid = child.id().ok_or("Il gioco si è chiuso subito")?;
 
     let started_at = now();
+    let status = Arc::new(Mutex::new(GameStatus::default()));
     running.insert(
         game.title_id.clone(),
-        Session { pid, started: Instant::now(), started_at, stop_requested: false },
+        Session { pid, started: Instant::now(), started_at, stop_requested: false, status: status.clone() },
     );
     drop(running);
 
     let (app, title_id) = (app.clone(), game.title_id.clone());
+    if let Ok(home) = app.path().home_dir() {
+        let log = home.join(format!("Library/Logs/nxnative/{title_id}.log"));
+        let watch = LogWatch::new(log, spawned);
+        tauri::async_runtime::spawn(follow_log(app.clone(), title_id.clone(), watch, status));
+    }
     tauri::async_runtime::spawn(async move {
         let status = child.wait().await;
         finish(&app, &title_id, status.ok());
     });
     Ok(started_at)
+}
+
+/// Reads the game's log once a second while the session lasts, and tells the
+/// UI (`game-status`) when what it shows changes.
+async fn follow_log(app: AppHandle, title_id: String, mut watch: LogWatch, shared: Arc<Mutex<GameStatus>>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let state = app.state::<AppState>();
+        // Over, or another session of this game started since: stop.
+        let ours = state.running.lock().unwrap().get(&title_id).is_some_and(|s| Arc::ptr_eq(&s.status, &shared));
+        if !ours {
+            return;
+        }
+        let status = match watch.poll(now()) {
+            Ok(s) => s.clone(),
+            Err(e) => {
+                eprintln!("cannot read the log of {title_id}: {e}");
+                continue;
+            }
+        };
+        let changed = {
+            let mut s = shared.lock().unwrap();
+            let changed = *s != status;
+            *s = status.clone();
+            changed
+        };
+        if changed {
+            let _ = app.emit("game-status", StatusEvent { title_id: &title_id, status: &status });
+        }
+    }
 }
 
 /// Records how the session ended and tells the UI (`game-exited`).
@@ -87,7 +143,7 @@ fn finish(app: &AppHandle, title_id: &str, status: Option<std::process::ExitStat
     game.last_played = Some(session.started_at);
     game.play_seconds += exit.seconds;
     game.last_exit = Some(exit);
-    let view = GameView { game: game.clone(), running_since: None };
+    let view = GameView { game: game.clone(), running_since: None, status: None };
     if let Err(e) = lib.save() {
         eprintln!("cannot save the library: {e}");
     }

@@ -131,7 +131,9 @@ pnpm tauri dev
 | `launcher_json.rs` | Tipi serde per lo schema 1 di `launcher.json`. Ignora i campi sconosciuti e accetta sezioni nuove. |
 | `prefs.rs` | Legge e scrive `launcher.<ENV>` con `CFPreferencesSetAppValue` sul dominio `org.nxnative.<titleID>`. Rimuove la chiave quando il valore torna al default. |
 | `runner.rs` | Avvia il gioco con `DM_LAUNCHER=0` e gli override; segue lo stato in esecuzione; traduce l'exit code in un messaggio; tiene il conto del tempo di gioco; apre il log. |
+| `gamelog.rs` | Legge il log del gioco in esecuzione un pezzo al secondo (solo il file di questa sessione: il launcher del gioco rinomina il precedente in `.prev.log`) e ne ricava la fase, la finestra coperta e le shader mancanti; `runner.rs` lo manda alla UI con l'evento `game-status` solo quando cambia. |
 | `engine.rs` | Controlli all'avvio (Python arm64, Xcode 27.2, `xcodegen`, `glslang`, `zstd`, spazio disco), commit fissato, flusso di aggiornamento. |
+| `covers.rs` | Copertine da internet con `/usr/bin/curl`: per i giochi Switch (title ID `01…`) da Nlib per title ID (`api.nlib.cc/nx/<ID>/icon`, dati di blawar/titledb), altrimenti dalla ricerca dell'eShop europeo per nome (`searching.nintendo-europe.com`), presa solo se console e nome coincidono. Salvate in `icons/cover-<ID>.jpg|png`. |
 
 **Modello dati, una voce di libreria:**
 ```ts
@@ -161,6 +163,7 @@ Per provarla senza un gioco vero: `scripts/make-fake-library.sh` crea in `fixtur
 
 - Import di una `.app` già costruita (drag & drop o pulsante) → lettura di `Info.plist` → griglia con icona e nome.
 - **Play** → spawn di `Contents/MacOS/nxnative`, badge "In gioco", exit code tradotto (`70` → "macOS ha revocato la GPU", `134` → "crash, apri il log").
+- Mentre il gioco gira, la scheda dice cosa sta facendo, letto dal suo log (`gamelog.rs`): «Avvio del gioco…», «Caricamento…», «Preparazione della grafica…» con un orologio (e la nota sul primo avvio su questo Mac, il più lungo), «Finestra coperta» e le shader che l'app non ha. Per provarlo: `FAKE_BOOT=10 scripts/make-fake-game.sh <cartella> <title ID> <nome> 0 30` crea un gioco finto che scrive le stesse righe del motore, con 10 secondi di preparazione al primo avvio.
 - "Mostra log", "Mostra salvataggi", "Mostra nel Finder".
 - **Traguardo:** si avvia dal launcher un gioco costruito da CLI.
 
@@ -187,6 +190,7 @@ Tab **Impostazioni** (cloud save, messaggi in italiano, prod.keys), pagina **Che
 - Prompt Home in italiano tramite `DM_HOME_QUIT_TEXT`.
 - Export IPA (con `--romfs separate` per i giochi grandi).
 - Statistiche di gioco, ultimo giocato, ordinamento e filtri.
+- **Copertine** (`covers.rs`): all'avvio del launcher, dopo un import e dopo una build, per i giochi che non ne hanno una. Prima Nlib per title ID (solo Switch: titledb conosce appena un centinaio di giochi Switch 2), poi l'eShop europeo per nome, filtrato per console (`nintendoswitch…` / `nintendoswitch2`) e con il nome che deve coincidere (o finire in «Nintendo Switch 2 Edition»): meglio nessuna copertina che quella sbagliata. Un gioco non trovato si richiede dopo una settimana, o subito con «Cerca la copertina». La copertina passa anche alla build come `--fallback-icon`: un `.nup` o un dump senza icona propria la usa come icona dell'app. Spegnibili in Impostazioni. Test dal vivo: `cargo test covers -- --ignored`.
 
 ### Fase 5: aggiornamento del motore ✅
 Nella scheda **Ambiente**: «Cerca aggiornamenti», le note `Front-ends:`, cosa cambia per il launcher, «Aggiorna» e «Torna alla versione precedente». Il controllo del compilatore Metal legge il requisito da `dm/gfx/tools/dmsh_chain.lock` del motore. Dopo un aggiornamento, `git add engine && git commit` fissa la nuova versione in questo repo.
@@ -201,9 +205,10 @@ Nella scheda **Ambiente**: «Cerca aggiornamenti», le note `Front-ends:`, cosa 
 2. **Niente App Sandbox:** un'app sandboxed non può scrivere nel dominio preferenze `org.nxnative.*`. Va distribuita fuori dal Mac App Store (firma ad-hoc o Developer ID).
 3. **Python arm64:** sotto Rosetta lo script si ferma. Controllalo all'avvio con `platform.machine()`.
 4. **Exit code 2 = nessun JSON:** cattura sempre stderr, altrimenti l'errore si perde.
-5. **I log del gioco in esecuzione non sono un'API:** mostrali, ma non leggerli per dedurre stati (cambiano formulazione senza avviso).
+5. **I log del gioco in esecuzione non sono un'API:** cambiano formulazione senza avviso. Il launcher ne legge poche righe solo per mostrare cosa sta facendo il gioco (`gamelog.rs`, con il file del motore da cui viene ogni riga), mai per decidere qualcosa. Se una riga cambia, lo stato si limita a mostrare meno: «Avvio» e «Caricamento» passano comunque a «In gioco» dopo 5 minuti e 60 secondi. Dopo un aggiornamento del motore conviene ricontrollare quelle stringhe.
 6. **Cheat:** l'host li legge solo all'avvio o con ⌘R. Si scrivono prima del Play.
 7. **Chiavi e giochi:** il launcher non include, non copia e non invia mai `prod.keys` né file di gioco. Usa solo i percorsi scelti dall'utente.
+8. **Le fonti delle copertine non sono API ufficiali:** Nlib è un servizio della community e la ricerca dell'eShop europeo non è documentata. Se una cambia, il gioco resta senza copertina: niente si rompe, e i test `covers` (incluso quello dal vivo) dicono quale delle due ha smesso di rispondere. Ricevono solo il title ID (Nlib) o il nome del gioco (Nintendo).
 
 ---
 

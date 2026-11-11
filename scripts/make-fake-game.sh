@@ -12,6 +12,12 @@
 #   launcher.json: the settings list to carry (none: the game has no settings)
 #   env.txt:       switches baked into the app (Contents/Resources/dm/env.txt)
 #
+# FAKE_BOOT=<seconds> also plays a start like the engine's, with its log lines
+# (src-tauri/src/gamelog.rs): a few seconds before the game's code runs, the
+# graphics preparation behind the progress screen (that many seconds on the
+# first start, 2 on later ones), three missing shaders, the first frame, and the
+# window covered for a while. Before the game's own seconds.
+#
 # scripts/make-fake-library.sh makes a set of three.
 set -euo pipefail
 
@@ -20,7 +26,7 @@ if [ $# -lt 3 ]; then
   exit 2
 fi
 out=$1 id=$(echo "$2" | tr '[:lower:]' '[:upper:]') name=$3 code=${4:-0} secs=${5:-8}
-settings=${6:-} envfile=${7:-}
+settings=${6:-} envfile=${7:-} boot=${FAKE_BOOT:-0}
 app="$out/$name.app"
 res="$app/Contents/Resources"
 rm -rf "$app"
@@ -85,7 +91,26 @@ if [ -f "\$ch/.cheats-off-$id" ]; then echo "launcher: cheats off (master switch
 elif [ -f "\$ch/$BID.txt" ]; then echo "launcher: cheats for build $BID, on: \$(tr '\n' ',' < "\$ch/$BID.enabled" 2>/dev/null)"
 fi
 trap 'echo "launcher: SIGTERM, stopping"; exit 143' TERM INT HUP
-sleep $secs & wait \$!
+pause() { sleep "\$1" & wait \$!; }
+if [ $boot -gt 0 ]; then   # FAKE_BOOT: a start like the engine's (nvn_mtl.m, front_mac.m)
+  pause 3; echo "[dm] >>> nnMain"; pause 1
+  prep=2
+  if [ ! -f "\$sup/pso_user.tsv" ]; then
+    echo "[dm] [nvn-mtl] pipeline prewarm: this device's user list does not exist yet: \$sup/pso_user.tsv"; prep=$boot
+  fi
+  echo "[dm] front end: window visible"
+  echo "[dm] [nvn-mtl] pipeline prepare: 783 of 14748 lines done after 0.5 s, the progress screen shows"
+  for k in 3be3604ea84c019e f588d206e9bcae62 3be3604ea84c019e 8e97a49724315293; do
+    echo "[dm] [nvn-mtl] [RED] failed to load shader \${k}_b: cannot open \$res/msl/b-fake/\${k}_b.metallib"
+  done
+  pause \$prep
+  echo "[dm] [nvn-mtl] pipeline prepare: 14748 lines (9546 shaders, 2418 render pipelines, 287 compute pipelines) in \$prep.00 s on 10 workers before the first frame, progress screen shown; FAKE"
+  echo "fake" > "\$sup/pso_user.tsv"
+  pause 1; echo "[dm] [nvn-mtl] present: picture shape 1920x1080 (1.778:1) for the front end's layout"
+  pause 3; echo "[dm] front end: window covered (its display link fires about once a second: frame times measure nothing)"
+  pause 10; echo "[dm] front end: window visible"
+fi
+pause $secs
 echo "launcher: the host exited with $code"
 exit $code
 EOF

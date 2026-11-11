@@ -1,7 +1,14 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import { KeysRow } from "../components/KeysRow";
-import { configGet, configSetCloudFolder, configSetItalianPrompts, configSetKeys, type Config } from "../lib/ipc";
+import {
+  configGet,
+  configSetCloudFolder,
+  configSetCovers,
+  configSetItalianPrompts,
+  configSetKeys,
+  type Config,
+} from "../lib/ipc";
 
 /** The launcher's own settings: for every game, not one. */
 export default function Preferences({ gameCount, onError }: { gameCount: number; onError: (m: string) => void }) {
@@ -80,20 +87,19 @@ export default function Preferences({ gameCount, onError }: { gameCount: number;
               le partite avviate da qui.
             </p>
           </div>
-          <button
-            role="switch"
-            aria-checked={config.italianPrompts}
-            onClick={() => apply(() => configSetItalianPrompts(!config.italianPrompts))}
-            className={`relative mt-1 h-6 w-10 shrink-0 rounded-full transition-colors ${
-              config.italianPrompts ? "bg-sky-500" : "bg-neutral-300 dark:bg-neutral-700"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 left-0.5 size-5 rounded-full bg-white shadow transition-transform ${
-                config.italianPrompts ? "translate-x-4" : ""
-              }`}
-            />
-          </button>
+          <Switch on={config.italianPrompts} onToggle={() => apply(() => configSetItalianPrompts(!config.italianPrompts))} />
+        </section>
+
+        <section className="mt-4 flex items-start gap-4 rounded-xl border border-neutral-200 p-5 dark:border-neutral-800">
+          <div className="flex-1">
+            <h3 className="font-medium">Copertine da internet</h3>
+            <p className="mt-1 text-sm text-neutral-500">
+              Cerca la copertina dei giochi in libreria: per i giochi Switch il title ID va a api.nlib.cc (dati di
+              titledb), per quelli Switch 2, o se lì non c'è, il nome del gioco va alla ricerca dell'eShop europeo
+              di Nintendo. Non parte nient'altro. Spente, le copertine già scaricate restano.
+            </p>
+          </div>
+          <Switch on={config.covers} onToggle={() => apply(() => configSetCovers(!config.covers))} />
         </section>
 
         <KeysRow keys={config.prodKeys} onPick={pickKeys} onClear={() => apply(() => configSetKeys(null))} />
@@ -103,3 +109,22 @@ export default function Preferences({ gameCount, onError }: { gameCount: number;
 }
 
 const applied = (n: number) => `Cartella applicata a ${n === 1 ? "1 gioco" : `${n} giochi`}`;
+
+function Switch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={on}
+      onClick={onToggle}
+      className={`relative mt-1 h-6 w-10 shrink-0 rounded-full transition-colors ${
+        on ? "bg-sky-500" : "bg-neutral-300 dark:bg-neutral-700"
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 left-0.5 size-5 rounded-full bg-white shadow transition-transform ${
+          on ? "translate-x-4" : ""
+        }`}
+      />
+    </button>
+  );
+}

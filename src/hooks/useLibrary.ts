@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { libraryList, onGameExited, onLibraryChanged, type Game } from "../lib/ipc";
+import { libraryList, onGameExited, onGameStatus, onLibraryChanged, type Game, type GameStatus } from "../lib/ipc";
 
-/** The library, kept current with the games' exits. */
+/** The library, kept current with the games' exits and what running games are doing. */
 export function useLibrary() {
   const [games, setGames] = useState<Game[] | null>(null);
 
@@ -14,13 +14,20 @@ export function useLibrary() {
     setGames((gs) => gs?.map((g) => (g.titleId === game.titleId ? game : g)) ?? gs);
   }, []);
 
+  /** A late status of a game that has exited since is dropped. */
+  const setStatus = useCallback((titleId: string, status: GameStatus) => {
+    setGames(
+      (gs) => gs?.map((g) => (g.titleId === titleId && g.runningSince !== null ? { ...g, status } : g)) ?? gs,
+    );
+  }, []);
+
   useEffect(() => {
     refresh();
-    const unlisten = [onGameExited(update), onLibraryChanged(refresh)];
+    const unlisten = [onGameExited(update), onLibraryChanged(refresh), onGameStatus(setStatus)];
     return () => {
       unlisten.forEach((u) => u.then((off) => off()));
     };
-  }, [refresh, update]);
+  }, [refresh, update, setStatus]);
 
   return { games, refresh, update };
 }

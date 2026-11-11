@@ -25,6 +25,10 @@ pub struct Config {
     /// The engine commit before the last update, for "Torna alla precedente".
     #[serde(default)]
     pub previous_engine: Option<String>,
+    /// Look up covers on the internet (`covers.rs`): the title ID goes to
+    /// Nlib, the game's name to Nintendo's eShop search. Off: none are asked.
+    #[serde(default = "yes")]
+    pub covers: bool,
 }
 
 fn yes() -> bool {
@@ -33,7 +37,13 @@ fn yes() -> bool {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { prod_keys: None, cloud_saves_folder: None, italian_prompts: true, previous_engine: None }
+        Self {
+            prod_keys: None,
+            cloud_saves_folder: None,
+            italian_prompts: true,
+            previous_engine: None,
+            covers: true,
+        }
     }
 }
 
@@ -96,7 +106,7 @@ mod tests {
     #[test]
     fn an_older_config_gets_the_new_defaults() {
         let c: Config = serde_json::from_str(r#"{"prodKeys": null}"#).unwrap();
-        assert!(c.italian_prompts && c.cloud_saves_folder.is_none());
+        assert!(c.italian_prompts && c.covers && c.cloud_saves_folder.is_none());
     }
 
     #[test]

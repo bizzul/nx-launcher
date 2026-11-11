@@ -51,12 +51,40 @@ export type Game = {
   lastExit: ExitInfo | null;
   /** Set while the game runs (Unix seconds). */
   runningSince: number | null;
+  /** What the running game is doing, read from its log (null: not running). */
+  status: GameStatus | null;
   /** The engine commit this launcher built it with (null: built elsewhere). */
   builtWith: string | null;
   /** The game files it was built from, for "Ricompila". */
   sourcePath: string | null;
   /** The options of that build, which "Ricompila" uses again. */
   buildOptions: BuildOptions | null;
+  /** The cover found on the internet; shown instead of the app's icon. */
+  coverPath: string | null;
+  /** nlib: by title ID (titledb) · nintendoEu: Nintendo of Europe's eShop, by name. */
+  coverSource: "nlib" | "nintendoEu" | null;
+  /** When the sources were last asked (Unix seconds), found or not. */
+  coverChecked: number | null;
+};
+
+/**
+ * starting: the app's launcher runs, the game's code not yet ·
+ * loading: the game's code runs, nothing on screen yet ·
+ * preparing: the progress screen (shaders and pipelines before the first frame) ·
+ * playing: a frame has been shown.
+ */
+export type GamePhase = "starting" | "loading" | "preparing" | "playing";
+
+export type GameStatus = {
+  phase: GamePhase;
+  /** No pipeline list of this Mac yet: the first start, the long one. */
+  firstLaunch: boolean;
+  /** When the preparation started (Unix seconds). */
+  prepSince: number | null;
+  /** Another window covers the game's: macOS slows it down meanwhile. */
+  windowCovered: boolean;
+  /** Distinct shaders the game asked for that the app does not carry. */
+  missingShaders: number;
 };
 
 export type ImportReport = { added: Game[]; errors: string[] };
@@ -77,10 +105,18 @@ export const gameLaunch = (
 export const gameStop = (titleId: string) => invoke<void>("game_stop", { titleId });
 export const gameReveal = (titleId: string, target: RevealTarget) =>
   invoke<void>("game_reveal", { titleId, target });
+/** Asks the cover sources now; rejects with a message when none has the game. */
+export const gameFindCover = (titleId: string) => invoke<Game>("game_find_cover", { titleId });
 
 /** Emitted by Rust when a game this launcher started exits. */
 export const onGameExited = (cb: (game: Game) => void) =>
   listen<Game>("game-exited", (e) => cb(e.payload));
+
+/** Emitted by Rust when what a running game is doing changes (read from its log). */
+export const onGameStatus = (cb: (titleId: string, status: GameStatus) => void) =>
+  listen<{ titleId: string; status: GameStatus }>("game-status", (e) =>
+    cb(e.payload.titleId, e.payload.status),
+  );
 
 // ── Settings (docs/frontends.md, "The settings list") ───────────────────────
 
@@ -128,8 +164,11 @@ export type Config = {
   prodKeys: string | null;
   cloudSavesFolder: string | null;
   italianPrompts: boolean;
+  /** Look up covers on the internet (title ID to Nlib, name to Nintendo's eShop search). */
+  covers: boolean;
 };
 export const configGet = () => invoke<Config>("config_get");
+export const configSetCovers = (on: boolean) => invoke<Config>("config_set_covers", { on });
 /** Remembers only the path of prod.keys; `null` forgets it. */
 export const configSetKeys = (path: string | null) => invoke<Config>("config_set_keys", { path });
 /** A folder path, "icloud" for iCloud Drive › nxnative Saves, or null to turn cloud saves off. */
@@ -319,6 +358,9 @@ export const onLibraryChanged = (cb: () => void) => listen("library-changed", ()
 
 export const fileSrc = (path: string) => convertFileSrc(path);
 
-/** The cached PNG icon, served by Tauri's asset protocol. */
-export const iconSrc = (game: Game) =>
-  game.iconPath ? convertFileSrc(game.iconPath) : null;
+/** The game's picture, served by Tauri's asset protocol: its cover when one
+ * was found, else the cached PNG of the app's icon. */
+export const iconSrc = (game: Game) => {
+  const path = game.coverPath ?? game.iconPath;
+  return path ? convertFileSrc(path) : null;
+};

@@ -40,6 +40,17 @@ pub struct Game {
     /// The options of that build, which "Ricompila" uses again.
     #[serde(default)]
     pub build_options: Option<crate::build::Options>,
+    /// The cover found on the internet (`covers.rs`), in the icons folder;
+    /// shown instead of the app's icon, and the app's icon when a build
+    /// finds none in the game (`--fallback-icon`).
+    #[serde(default)]
+    pub cover_path: Option<PathBuf>,
+    #[serde(default)]
+    pub cover_source: Option<crate::covers::Source>,
+    /// When the sources were last asked (found or not): a game they do not
+    /// know is asked again only after a while, or from "Cerca la copertina".
+    #[serde(default)]
+    pub cover_checked: Option<u64>,
 }
 
 /// How the last session ended.
@@ -239,6 +250,9 @@ impl Library {
                     built_with: None,
                     source_path: None,
                     build_options: None,
+                    cover_path: None,
+                    cover_source: None,
+                    cover_checked: None,
                 };
                 self.games.push(g.clone());
                 g
@@ -252,8 +266,8 @@ impl Library {
     pub fn remove(&mut self, title_id: &str) -> Option<Game> {
         let i = self.games.iter().position(|g| g.title_id == title_id)?;
         let g = self.games.remove(i);
-        if let Some(icon) = &g.icon_path {
-            let _ = fs::remove_file(icon);
+        for file in [&g.icon_path, &g.cover_path].into_iter().flatten() {
+            let _ = fs::remove_file(file);
         }
         Some(g)
     }

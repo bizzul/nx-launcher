@@ -37,6 +37,7 @@ def main():
     ap.add_argument('--work-dir')
     ap.add_argument('--romfs', choices=('bundle', 'separate'), default='bundle')
     ap.add_argument('--seen-shaders', action='store_true')
+    ap.add_argument('--fallback-icon')   # the app's icon when the game carries none (the real script: a dump, a NUP without one)
     a = ap.parse_args()   # an argument error: usage on stderr, exit 2, no JSON
 
     src = Path(a.nsp_dir).absolute()
@@ -63,6 +64,9 @@ def main():
         subprocess.run(['/usr/bin/sips', '-s', 'format', 'jpeg', '-z', '256', '256',
                         '/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns',
                         '--out', str(icon)], capture_output=True)
+        if a.fallback_icon:   # the fake game carries no icon of its own, like a NUP without control data
+            icon = Path(a.fallback_icon)
+            ev('say', msg=f'no game icon: the app takes the fallback icon {icon} (--fallback-icon / FALLBACK_ICON)')
         ev('game', title_id=tid, name=name, version='1.0.0', bundle_id=f'org.nxnative.{tid.lower()}', out=str(out),
            icon=str(icon) if icon.is_file() else None)
         ev('say', msg=f'{name} ({tid}) v1.0.0 → {out}')

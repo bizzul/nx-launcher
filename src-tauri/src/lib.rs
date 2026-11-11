@@ -1,7 +1,9 @@
 mod build;
 mod cheats;
 mod config;
+mod covers;
 mod engine;
+mod gamelog;
 mod library;
 mod prefs;
 mod runner;
@@ -34,14 +36,18 @@ pub struct GameView {
     game: Game,
     /// When the running session started (Unix seconds); `None` when not running.
     running_since: Option<u64>,
+    /// What the running game is doing, from its log; `None` when not running.
+    status: Option<gamelog::GameStatus>,
 }
 
 impl AppState {
     fn view(&self, game: &Game) -> GameView {
         let running = self.running.lock().unwrap();
+        let session = running.get(&game.title_id);
         GameView {
             game: game.clone(),
-            running_since: running.get(&game.title_id).map(|s| s.started_at),
+            running_since: session.map(|s| s.started_at),
+            status: session.map(runner::Session::status),
         }
     }
 
@@ -105,7 +111,7 @@ fn library_list(state: State<AppState>) -> Vec<GameView> {
 
 /// Adds Mac apps packed by nxnative (from the file picker or dropped on the window).
 #[tauri::command]
-async fn library_import(state: State<'_, AppState>, paths: Vec<PathBuf>) -> Result<ImportReport, String> {
+async fn library_import(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Result<ImportReport, String> {
     let mut report = ImportReport { added: Vec::new(), errors: Vec::new() };
     for path in paths {
         match import_app(&state, path).await {
@@ -113,6 +119,7 @@ async fn library_import(state: State<'_, AppState>, paths: Vec<PathBuf>) -> Resu
             Err(e) => report.errors.push(e),
         }
     }
+    fetch_covers(&app, Some(report.added.iter().map(|v| v.game.title_id.clone()).collect()));
     Ok(report)
 }
 
@@ -247,6 +254,109 @@ fn config_set_italian_prompts(state: State<AppState>, on: bool) -> Result<config
     store.config.italian_prompts = on;
     store.save().map_err(|e| e.to_string())?;
     Ok(store.config.clone())
+}
+
+/// Covers from the internet on or off; turned on, the library is looked up.
+#[tauri::command]
+fn config_set_covers(app: AppHandle, state: State<AppState>, on: bool) -> Result<config::Config, String> {
+    let config = {
+        let mut store = state.config.lock().unwrap();
+        store.config.covers = on;
+        store.save().map_err(|e| e.to_string())?;
+        store.config.clone()
+    };
+    if on {
+        fetch_covers(&app, None);
+    }
+    Ok(config)
+}
+
+// ── Covers (covers.rs) ──────────────────────────────────────────────────────
+
+/// A game no source knew is asked again after a week (a new game reaches
+/// the shop later), or at once from "Cerca la copertina".
+const COVER_RETRY_SECS: u64 = 7 * 24 * 3600;
+
+fn wants_cover(game: &Game, now: u64) -> bool {
+    game.cover_path.as_ref().map_or(true, |p| !p.is_file())
+        && game.cover_checked.map_or(true, |t| now.saturating_sub(t) >= COVER_RETRY_SECS)
+}
+
+/// Asks the sources for one game's cover and records the answer; `Ok(true)`
+/// when one was saved. A network failure is an `Err` and records nothing, so
+/// the game is asked again at the next start.
+async fn lookup_cover(state: &AppState, title_id: &str, name: &str) -> Result<bool, String> {
+    let found = covers::find(title_id, name).await?;
+    let mut lib = state.library.lock().unwrap();
+    let saved = match found {
+        Some((bytes, source)) => {
+            let path = covers::save(&lib.icons_dir, title_id, &bytes).map_err(|e| e.to_string())?;
+            Some((path, source))
+        }
+        None => None,
+    };
+    let Some(game) = lib.get_mut(title_id) else {
+        // Removed from the library meanwhile: no cover to keep for it.
+        if let Some((path, _)) = saved {
+            let _ = std::fs::remove_file(path);
+        }
+        return Ok(false);
+    };
+    game.cover_checked = Some(library::now());
+    let hit = saved.is_some();
+    if let Some((path, source)) = saved {
+        game.cover_path = Some(path);
+        game.cover_source = Some(source);
+    }
+    lib.save().map_err(|e| e.to_string())?;
+    Ok(hit)
+}
+
+/// Looks up covers in the background, for `ids` or the whole library: only
+/// the games without one and not asked lately. Nothing while turned off.
+pub fn fetch_covers(app: &AppHandle, ids: Option<Vec<String>>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        if !state.config.lock().unwrap().config.covers {
+            return;
+        }
+        let now = library::now();
+        let todo: Vec<(String, String)> = state
+            .library
+            .lock()
+            .unwrap()
+            .games()
+            .iter()
+            .filter(|g| ids.as_ref().map_or(true, |ids| ids.contains(&g.title_id)) && wants_cover(g, now))
+            .map(|g| (g.title_id.clone(), g.name.clone()))
+            .collect();
+        for (id, name) in todo {
+            match lookup_cover(&state, &id, &name).await {
+                Ok(true) => {
+                    let _ = tauri::Emitter::emit(&app, "library-changed", ());
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("cover of {id}: {e}"),
+            }
+        }
+    });
+}
+
+/// "Cerca la copertina": asks the sources now, whatever they said before.
+#[tauri::command]
+async fn game_find_cover(state: State<'_, AppState>, title_id: String) -> Result<GameView, String> {
+    if !state.config.lock().unwrap().config.covers {
+        return Err("Le copertine da internet sono spente in Impostazioni".into());
+    }
+    let game = state.game(&title_id)?;
+    let found = lookup_cover(state.inner(), &game.title_id, &game.name)
+        .await
+        .map_err(|e| format!("Copertina non scaricata ({e}): riprova più tardi"))?;
+    if !found {
+        return Err(format!("Nessuna copertina trovata per «{}»", game.name));
+    }
+    Ok(state.view(&state.game(&title_id)?))
 }
 
 // ── The engine's version (docs/frontends.md, "Following main") ──────────────
@@ -467,6 +577,7 @@ pub fn run() {
                 config: Mutex::new(ConfigStore::load(&data_dir)),
                 build: Mutex::new(None),
             });
+            fetch_covers(app.handle(), None);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -491,6 +602,8 @@ pub fn run() {
             config_set_keys,
             config_set_cloud_folder,
             config_set_italian_prompts,
+            config_set_covers,
+            game_find_cover,
             engine_info,
             engine_check,
             engine_apply,

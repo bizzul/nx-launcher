@@ -1,8 +1,22 @@
 import { useState } from "react";
 import { GameIcon } from "../components/GameIcon";
 import { useNow } from "../hooks/useLibrary";
-import { exitMessage, formatDuration, formatWhen, type Tone } from "../lib/format";
-import { gameLaunch, gameReveal, gameStop, libraryRemove, type Game } from "../lib/ipc";
+import { exitMessage, formatClock, formatDuration, formatWhen, type Tone } from "../lib/format";
+import {
+  gameFindCover,
+  gameLaunch,
+  gameReveal,
+  gameStop,
+  libraryRemove,
+  type Game,
+  type GameStatus,
+} from "../lib/ipc";
+
+/** Where a cover came from, said under the title ID. */
+const COVER_SOURCES: Record<NonNullable<Game["coverSource"]>, string> = {
+  nlib: "titledb (Nlib)",
+  nintendoEu: "Nintendo eShop",
+};
 
 type Props = {
   game: Game;
@@ -34,8 +48,11 @@ export default function GameDetail({
   onError,
 }: Props) {
   const [confirm, setConfirm] = useState<"stop" | "remove" | null>(null);
-  const now = useNow(15_000);
+  const [findingCover, setFindingCover] = useState(false);
   const running = game.runningSince !== null;
+  /** Starting or preparing: its clock ticks every second. */
+  const busy = running && !!game.status && game.status.phase !== "playing";
+  const now = useNow(busy ? 1000 : 15_000);
   const last = game.lastExit && exitMessage(game.lastExit);
 
   const act = (fn: () => Promise<unknown>) => async () => {
@@ -50,6 +67,15 @@ export default function GameDetail({
   const play = (settingsWindow: boolean) =>
     act(async () => onChanged(await gameLaunch(game.titleId, settingsWindow)));
 
+  const findCover = act(async () => {
+    setFindingCover(true);
+    try {
+      onChanged(await gameFindCover(game.titleId));
+    } finally {
+      setFindingCover(false);
+    }
+  });
+
   return (
     <aside className="flex w-80 shrink-0 flex-col overflow-y-auto border-l border-neutral-200 dark:border-neutral-800">
       <div className="p-6">
@@ -59,6 +85,9 @@ export default function GameDetail({
           {game.version && `v${game.version} · `}
           {game.titleId}
         </p>
+        {game.coverPath && game.coverSource && (
+          <p className="mt-0.5 text-[11px] text-neutral-400">Copertina: {COVER_SOURCES[game.coverSource]}</p>
+        )}
 
         {/* Play / stop */}
         <div className="mt-5">
@@ -91,8 +120,16 @@ export default function GameDetail({
           ) : (
             <>
               <p className="mb-2 text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                ● In gioco da {formatDuration(Math.max(0, now - game.runningSince!))}
+                {busy ? "● Avvio in corso" : `● In gioco da ${formatDuration(Math.max(0, now - game.runningSince!))}`}
               </p>
+              {game.status && (
+                <RunStatus
+                  status={game.status}
+                  since={game.runningSince!}
+                  now={now}
+                  seenShaders={!!game.buildOptions?.seenShaders}
+                />
+              )}
               <button onClick={() => setConfirm("stop")} className="btn w-full">
                 ■ Termina
               </button>
@@ -141,6 +178,11 @@ export default function GameDetail({
               Ricompila{game.buildOptions?.seenShaders ? " (aggiunge le shader mancanti)" : ""}…
             </LinkButton>
           )}
+          {!game.coverPath && (
+            <LinkButton onClick={findingCover ? () => {} : findCover}>
+              {findingCover ? "Cerco la copertina…" : "Cerca la copertina"}
+            </LinkButton>
+          )}
           <LinkButton onClick={act(() => gameReveal(game.titleId, "app"))}>Mostra nel Finder</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "log"))}>Apri il log</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "saves"))}>Apri i salvataggi</LinkButton>
@@ -179,6 +221,66 @@ export default function GameDetail({
         )}
       </div>
     </aside>
+  );
+}
+
+/** What the running game is doing, from its log (gamelog.rs). */
+function RunStatus({
+  status,
+  since,
+  now,
+  seenShaders,
+}: {
+  status: GameStatus;
+  /** When the session started (Unix seconds). */
+  since: number;
+  now: number;
+  /** Built with "Solo le shader usate": "Ricompila" adds the missing ones. */
+  seenShaders: boolean;
+}) {
+  const rows: { tone: Tone; text: string; note?: string }[] = [];
+  const clock = (from: number) => formatClock(Math.max(0, now - from));
+  switch (status.phase) {
+    case "starting":
+      rows.push({ tone: "neutral", text: `Avvio del gioco… ${clock(since)}` });
+      break;
+    case "loading":
+      rows.push({ tone: "neutral", text: `Caricamento… ${clock(since)}` });
+      break;
+    case "preparing":
+      rows.push({
+        tone: "neutral",
+        text: `Preparazione della grafica… ${clock(status.prepSince ?? since)}`,
+        note: status.firstLaunch
+          ? "Primo avvio su questo Mac: di solito qualche minuto. Il lavoro resta salvato, i prossimi avvii sono più rapidi."
+          : "Il gioco mostra una schermata di avanzamento finché non ha finito.",
+      });
+      break;
+  }
+  if (status.windowCovered) {
+    rows.push({ tone: "warn", text: "Finestra coperta: macOS rallenta il gioco finché non torna visibile." });
+  }
+  const n = status.missingShaders;
+  if (n > 0) {
+    rows.push(
+      seenShaders
+        ? {
+            tone: "neutral",
+            text: `Il gioco ha chiesto ${n.toLocaleString("it")} shader che questa build non ha («Solo le shader usate»): «Ricompila», a gioco chiuso, le aggiunge.`,
+          }
+        : { tone: "warn", text: `${n.toLocaleString("it")} shader non si sono caricate: i dettagli sono nel log.` },
+    );
+  }
+  if (!rows.length) return null;
+  return (
+    <div className="mb-3 flex flex-col gap-2">
+      {rows.map((r) => (
+        <p key={r.text.slice(0, 24)} className={`rounded-lg p-3 text-xs leading-relaxed ${TONES[r.tone]}`}>
+          <span className={r.note ? "font-medium" : ""}>{r.text}</span>
+          {r.note && <span className="mt-1 block">{r.note}</span>}
+        </p>
+      ))}
+    </div>
   );
 }
 
