@@ -35,7 +35,7 @@ pub enum Target {
     Ios,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Options {
     #[serde(default)]
@@ -44,6 +44,36 @@ pub struct Options {
     /// script prints the command that copies its files to the device once.
     #[serde(default)]
     pub romfs_separate: bool,
+    /// Mac only: `--seen-shaders`, only the shaders the game's playtests
+    /// used (its profile's `shader_seen.tsv`). Much faster; an area the list
+    /// does not cover draws without them until a build adds the keys the
+    /// game's log reports missing (docs/development.md, "Building selected
+    /// Mac shaders").
+    #[serde(default)]
+    pub seen_shaders: bool,
+}
+
+/// The base game's title ID as file names usually carry it: 16 hex digits in
+/// brackets (`… [0400486024dec000][v131072].nup`). A base game's ends in 000
+/// (an update's in 800), so that one wins.
+pub fn guess_title_id<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut found: Vec<String> = Vec::new();
+    for name in names {
+        let b = name.as_bytes();
+        for i in 0..b.len() {
+            if b[i] == b'[' && b.get(i + 17) == Some(&b']') && b[i + 1..i + 17].iter().all(u8::is_ascii_hexdigit) {
+                found.push(name[i + 1..i + 17].to_uppercase());
+            }
+        }
+    }
+    found.iter().find(|id| id.ends_with("000")).or(found.first()).cloned()
+}
+
+/// How many shaders the game's profile lists as seen in playtests; `None`
+/// when the profile has no list (or the engine has no profile for it).
+pub fn seen_list(engine_root: &Path, title_id: &str) -> Option<usize> {
+    let text = fs::read_to_string(engine_root.join(format!("dm/games/{title_id}/shader_seen.tsv"))).ok()?;
+    Some(text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -72,6 +102,9 @@ pub struct SourceInfo {
     /// A `*_build` folder from an earlier build is there: a repeat build
     /// reuses it and needs far less time and space.
     pub previous_build: bool,
+    /// The title ID read from the file names, when they carry it (the
+    /// script reads the real one from the game's files).
+    pub title_id: Option<String>,
 }
 
 fn ext_of(p: &Path) -> String {
@@ -135,8 +168,11 @@ pub fn inspect(path: &Path) -> Result<SourceInfo, String> {
         .flatten()
         .flatten()
         .any(|e| e.file_name().to_string_lossy().ends_with("_build") && e.path().is_dir());
+    let own_name = file_name(path);
+    let title_id = guess_title_id(std::iter::once(own_name.as_str()).chain(files.iter().map(String::as_str)));
     Ok(SourceInfo {
         path: path.into(),
+        title_id,
         needs_keys: kind == SourceKind::Nsp,
         files: files.into_iter().take(8).collect(),
         kind,
@@ -158,6 +194,9 @@ fn file_name(p: &Path) -> String {
 pub struct Preflight {
     pub source: SourceInfo,
     pub keys: Option<PathBuf>,
+    /// The shaders the game's profile lists for `--seen-shaders`; `None`
+    /// when it has no list or the title ID is not known yet.
+    pub seen_list: Option<usize>,
     pub free_bytes: u64,
     pub needed_bytes: u64,
     /// Problems that stop the build before it starts.
@@ -194,6 +233,16 @@ pub async fn preflight(engine: &Engine, path: &Path, keys: Option<PathBuf>, opts
     if opts.target == Target::Ios && source.kind == SourceKind::Nup {
         warnings.push("I giochi Switch 2 sono testati solo su Mac: su iPhone e iPad potrebbero non partire".into());
     }
+    let seen = source.title_id.as_deref().and_then(|id| seen_list(&engine.root, id));
+    if opts.seen_shaders {
+        if opts.target == Target::Ios {
+            blockers.push("«Solo le shader usate» vale solo per l'app Mac".into());
+        } else if source.title_id.is_some() && seen.is_none() {
+            blockers.push("Il profilo di questo gioco non ha la lista delle shader usate: compila tutte le shader".into());
+        } else if source.title_id.is_none() {
+            warnings.push("Dal nome dei file non si capisce il gioco: se il suo profilo non ha la lista delle shader usate, la build si ferma subito".into());
+        }
+    }
     let keys = keys.filter(|k| k.is_file());
     if source.needs_keys && keys.is_none() {
         blockers.push("I file NSP/XCI/NSZ richiedono prod.keys: sceglilo nella riga «prod.keys»".into());
@@ -206,7 +255,7 @@ pub async fn preflight(engine: &Engine, path: &Path, keys: Option<PathBuf>, opts
             needed / GIB
         ));
     }
-    Ok(Preflight { source, keys, free_bytes: free, needed_bytes: needed, blockers, warnings })
+    Ok(Preflight { source, keys, seen_list: seen, free_bytes: free, needed_bytes: needed, blockers, warnings })
 }
 
 // ── The build as the UI sees it ─────────────────────────────────────────────
@@ -484,6 +533,9 @@ pub async fn start(
     if opts.target == Target::Ios && opts.romfs_separate {
         cmd.args(["--romfs", "separate"]);
     }
+    if opts.target == Target::Mac && opts.seen_shaders {
+        cmd.arg("--seen-shaders");
+    }
     if let (true, Some(keys)) = (pre.source.needs_keys, &pre.keys) {
         cmd.arg("-k").arg(keys);
     }
@@ -603,6 +655,9 @@ pub async fn start(
                         if let Some(g) = lib.get_mut(&game.title_id) {
                             g.built_with = engine_commit.clone();
                             g.source_path = Some(source.clone());
+                            // "Ricompila" repeats them: with --seen-shaders it
+                            // adds the keys the game's log reported missing.
+                            g.build_options = Some(opts);
                         }
                         let _ = lib.save();
                         imported = Some(game.title_id)
@@ -666,6 +721,7 @@ mod tests {
             files: vec![],
             build_dir: "/g".into(),
             previous_build: false,
+            title_id: None,
             },
             Options::default(),
         )
@@ -718,6 +774,38 @@ mod tests {
         assert_eq!(outcome(&b, st(1), false), (Status::Failed, Some("prod.keys (-k) not given".into())));
         b.stderr.push_back("error: argument --platform: invalid choice".into());
         assert!(outcome(&b, st(2), false).1.unwrap().contains("invalid choice"));
+    }
+
+    #[test]
+    fn guesses_the_base_title_id_from_names() {
+        let nup = "[site] - The Legend of Zelda Ocarina of Time [0400486024dec000][v131072].nup";
+        assert_eq!(guess_title_id([nup]).as_deref(), Some("0400486024DEC000"));
+        let nsps = ["Mario [010015100B514800][v327680].nsp", "Mario [010015100B514000][v0].nsp"];
+        assert_eq!(guess_title_id(nsps).as_deref(), Some("010015100B514000"));
+        assert_eq!(guess_title_id(["My Dump"]), None);
+        assert_eq!(guess_title_id(["[0123]", "[zz15100B514000ab]"]), None);
+    }
+
+    #[test]
+    fn reads_the_seen_shaders_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("dm/games/0400486024DEC000");
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("shader_seen.tsv"), "# what the playtests asked for\n0015af409af55f88\n00c18860b22d5c7c\n\n").unwrap();
+        assert_eq!(seen_list(dir.path(), "0400486024DEC000"), Some(2));
+        assert_eq!(seen_list(dir.path(), "0400C3F00006E000"), None);
+    }
+
+    #[test]
+    fn the_pinned_engine_has_seen_lists() {
+        // Against the real checkout, when there is one: profiles with a list
+        // (Ocarina of Time) and without (Mario Kart World).
+        let root = crate::engine::Engine::dev_default().root;
+        if !root.join("dm/games").is_dir() {
+            return;
+        }
+        assert!(seen_list(&root, "0400486024DEC000").is_some_and(|n| n > 1000));
+        assert_eq!(seen_list(&root, "0400C3F00006E000"), None);
     }
 
     #[test]

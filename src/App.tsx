@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { useLibrary } from "./hooks/useLibrary";
 import { engineRebuildHints, libraryImport } from "./lib/ipc";
-import Build from "./routes/Build";
+import Build, { type PendingSource } from "./routes/Build";
 import Cheats from "./routes/Cheats";
 import Doctor from "./routes/Doctor";
 import GameDetail from "./routes/GameDetail";
@@ -18,8 +18,8 @@ export default function App() {
   const { games, refresh, update } = useLibrary();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  /** A game folder or .nup dropped on the window, handed to the build view. */
-  const [buildSource, setBuildSource] = useState<string | null>(null);
+  /** A game folder or .nup for the build view: dropped, or "Ricompila" with its last options. */
+  const [buildSource, setBuildSource] = useState<PendingSource | null>(null);
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   /** Games worth rebuilding with the current engine, and why. */
   const [hints, setHints] = useState<Record<string, string[]>>({});
@@ -73,7 +73,7 @@ export default function App() {
         const sources = payload.paths.filter((p) => !p.endsWith(".app"));
         if (apps.length) importPaths(apps);
         if (sources.length) {
-          setBuildSource(sources[0]!);
+          setBuildSource({ path: sources[0]! });
           setView("build");
         }
       }
@@ -141,8 +141,8 @@ export default function App() {
                 key={selected.titleId}
                 game={selected}
                 rebuildHints={hints[selected.titleId]}
-                onRebuild={(source) => {
-                  setBuildSource(source);
+                onRebuild={(path, options) => {
+                  setBuildSource({ path, options });
                   setView("build");
                 }}
                 onOpenSettings={() => setView("settings")}

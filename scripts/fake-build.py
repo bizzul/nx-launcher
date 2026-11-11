@@ -36,6 +36,7 @@ def main():
     ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'json', 'off'), default='auto')
     ap.add_argument('--work-dir')
     ap.add_argument('--romfs', choices=('bundle', 'separate'), default='bundle')
+    ap.add_argument('--seen-shaders', action='store_true')
     a = ap.parse_args()   # an argument error: usage on stderr, exit 2, no JSON
 
     src = Path(a.nsp_dir).absolute()
@@ -73,6 +74,10 @@ def main():
         ev('stage', k=3, n=n, name='Mac shaders', step='compile')
         ev('shaders_stale', reason='chain', old=['b-41'], new='b-42', count=2)
         total = 2418
+        if a.seen_shaders:   # the profile's shader_seen.tsv instead of the whole map
+            total = 312
+            ev('say', msg=f'--seen-shaders: {total} of 2,418 shaders, the ones the playtests used (FAKE); '
+                          'an area they do not cover draws without its shaders')
         for i in range(1, 21):
             wait(0.4)
             done = total * i // 20

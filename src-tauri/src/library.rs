@@ -37,6 +37,9 @@ pub struct Game {
     /// The game files the launcher built it from, for "Ricompila".
     #[serde(default)]
     pub source_path: Option<PathBuf>,
+    /// The options of that build, which "Ricompila" uses again.
+    #[serde(default)]
+    pub build_options: Option<crate::build::Options>,
 }
 
 /// How the last session ended.
@@ -235,6 +238,7 @@ impl Library {
                     last_exit: None,
                     built_with: None,
                     source_path: None,
+                    build_options: None,
                 };
                 self.games.push(g.clone());
                 g

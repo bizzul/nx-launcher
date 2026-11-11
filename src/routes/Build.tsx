@@ -16,6 +16,7 @@ import {
   fileSrc,
   gameLaunch,
   onBuildUpdated,
+  DEFAULT_BUILD_OPTIONS,
   type BuildOptions,
   type BuildProgress,
   type BuildSnapshot,
@@ -23,9 +24,12 @@ import {
   type Stage,
 } from "../lib/ipc";
 
+/** A source handed to the page: dropped on the window, or "Ricompila" with
+ *  the options of the game's last build. */
+export type PendingSource = { path: string; options?: BuildOptions | null };
+
 type Props = {
-  /** A folder or .nup dropped on the window, to check and build. */
-  pendingSource: string | null;
+  pendingSource: PendingSource | null;
   onSourceTaken: () => void;
   onOpenGame: (titleId: string) => void;
   onError: (message: string) => void;
@@ -40,7 +44,7 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
   const [keys, setKeys] = useState<string | null>(null);
   const [pre, setPre] = useState<Preflight | null>(null);
   const [checking, setChecking] = useState(false);
-  const [opts, setOpts] = useState<BuildOptions>({ target: "mac", romfsSeparate: false });
+  const [opts, setOpts] = useState<BuildOptions>(DEFAULT_BUILD_OPTIONS);
 
   useEffect(() => {
     buildStatus().then((s) => {
@@ -82,8 +86,12 @@ export default function Build({ pendingSource, onSourceTaken, onOpenGame, onErro
       onError("Una build è già in corso: aspetta che finisca");
       return;
     }
-    (snap ? buildDismiss().then(() => setSnap(null)) : Promise.resolve()).then(() => check(pendingSource));
-  }, [pendingSource, loaded, snap, check, onSourceTaken, onError]);
+    const options = { ...DEFAULT_BUILD_OPTIONS, ...(pendingSource.options ?? opts) };
+    setOpts(options);
+    (snap ? buildDismiss().then(() => setSnap(null)) : Promise.resolve()).then(() =>
+      check(pendingSource.path, options),
+    );
+  }, [pendingSource, loaded, snap, check, onSourceTaken, onError, opts]);
 
   const pick = async (directory: boolean) => {
     const path = await open(
@@ -206,6 +214,7 @@ function PreflightCard({
           ))}
         </div>
       </div>
+      {opts.target === "mac" && <SeenShadersOption pre={pre} opts={opts} onOpts={onOpts} />}
       {opts.target === "ios" && (
         <label className="mt-3 flex items-start gap-2 text-sm">
           <input
@@ -269,6 +278,43 @@ function PreflightCard({
         </button>
       </div>
     </div>
+  );
+}
+
+/** --seen-shaders: offered when the game's profile lists the shaders its
+ *  playtests used; with a title ID that has no list, it is shown off. */
+function SeenShadersOption({
+  pre,
+  opts,
+  onOpts,
+}: {
+  pre: Preflight;
+  opts: BuildOptions;
+  onOpts: (o: BuildOptions) => void;
+}) {
+  const known = pre.source.titleId !== null;
+  const available = pre.seenList !== null;
+  const disabled = known && !available && !opts.seenShaders;
+  return (
+    <label className={`mt-3 flex items-start gap-2 text-sm ${disabled ? "opacity-50" : ""}`}>
+      <input
+        type="checkbox"
+        checked={opts.seenShaders}
+        disabled={disabled}
+        onChange={(e) => onOpts({ ...opts, seenShaders: e.target.checked })}
+        className="mt-0.5 accent-sky-500"
+      />
+      <span>
+        Solo le shader usate (<code className="font-mono text-xs">--seen-shaders</code>)
+        <span className="block text-xs text-neutral-500">
+          {available
+            ? `Compila le ${pre.seenList!.toLocaleString("it")} shader viste nei playtest invece di tutte: molto più veloce. Le zone non coperte si vedono senza quelle shader finché non ricompili: «Ricompila» aggiunge quelle che il gioco ha segnalato mancanti.`
+            : known
+              ? "Il profilo di questo gioco non ha la lista delle shader usate: la build le compila tutte."
+              : "Dal nome dei file non si capisce il gioco. Vale per i giochi il cui profilo ha la lista delle shader usate; per gli altri la build si ferma subito."}
+        </span>
+      </span>
+    </label>
   );
 }
 

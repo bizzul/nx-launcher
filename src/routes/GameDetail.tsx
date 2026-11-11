@@ -8,7 +8,8 @@ type Props = {
   game: Game;
   /** Why rebuilding with the current engine is worth it (none: up to date or unknown). */
   rebuildHints?: string[];
-  onRebuild: (sourcePath: string) => void;
+  /** Builds again from the recorded source, with the last build's options. */
+  onRebuild: (sourcePath: string, options: Game["buildOptions"]) => void;
   onOpenSettings: () => void;
   onOpenCheats: () => void;
   onChanged: (game: Game) => void;
@@ -108,7 +109,7 @@ export default function GameDetail({
               ))}
             </ul>
             {game.sourcePath && !running && (
-              <button onClick={() => onRebuild(game.sourcePath!)} className="btn mt-2 w-full">
+              <button onClick={() => onRebuild(game.sourcePath!, game.buildOptions)} className="btn mt-2 w-full">
                 Ricompila
               </button>
             )}
@@ -135,6 +136,11 @@ export default function GameDetail({
         <div className="mt-5 flex flex-col gap-1 border-t border-neutral-200 pt-4 dark:border-neutral-800">
           <LinkButton onClick={onOpenSettings}>Impostazioni…</LinkButton>
           <LinkButton onClick={onOpenCheats}>Cheat…</LinkButton>
+          {game.sourcePath && !running && (
+            <LinkButton onClick={() => onRebuild(game.sourcePath!, game.buildOptions)}>
+              Ricompila{game.buildOptions?.seenShaders ? " (aggiunge le shader mancanti)" : ""}…
+            </LinkButton>
+          )}
           <LinkButton onClick={act(() => gameReveal(game.titleId, "app"))}>Mostra nel Finder</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "log"))}>Apri il log</LinkButton>
           <LinkButton onClick={act(() => gameReveal(game.titleId, "saves"))}>Apri i salvataggi</LinkButton>

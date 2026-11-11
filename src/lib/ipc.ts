@@ -55,6 +55,8 @@ export type Game = {
   builtWith: string | null;
   /** The game files it was built from, for "Ricompila". */
   sourcePath: string | null;
+  /** The options of that build, which "Ricompila" uses again. */
+  buildOptions: BuildOptions | null;
 };
 
 export type ImportReport = { added: Game[]; errors: string[] };
@@ -230,11 +232,15 @@ export type SourceInfo = {
   files: string[];
   buildDir: string;
   previousBuild: boolean;
+  /** Read from the file names, when they carry it. */
+  titleId: string | null;
 };
 
 export type Preflight = {
   source: SourceInfo;
   keys: string | null;
+  /** Shaders the profile lists for --seen-shaders (null: no list, or game not known yet). */
+  seenList: number | null;
   freeBytes: number;
   neededBytes: number;
   blockers: string[];
@@ -266,7 +272,11 @@ export type BuildOptions = {
   target: "mac" | "ios";
   /** IPA only: --romfs separate, for a game too big to install. */
   romfsSeparate: boolean;
+  /** Mac only: --seen-shaders, only the shaders the playtests used. */
+  seenShaders: boolean;
 };
+
+export const DEFAULT_BUILD_OPTIONS: BuildOptions = { target: "mac", romfsSeparate: false, seenShaders: false };
 
 export type BuildSnapshot = {
   source: SourceInfo;
